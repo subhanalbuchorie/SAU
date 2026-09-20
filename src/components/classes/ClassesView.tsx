@@ -212,23 +212,27 @@ export const ClassesView: React.FC<ClassesViewProps> = ({ classes, onRefresh }) 
       const newClasses: ClassItem[] = [];
 
       rows.forEach((row: any) => {
-        const code = row['Kode_Kelas'] || row['Kode'] || row['code'];
-        const name = row['Nama_Kelas'] || row['Nama'] || row['name'] || code;
-        if (code && name) {
-          const gradeVal = parseInt(row['Tingkat'] || row['grade'] || '12', 10) || 12;
-          const major = row['Program_Keahlian'] || row['Jurusan'] || row['major'] || 'Umum';
-          const teacher = row['Wali_Kelas'] || row['Wali'] || row['homeroomTeacher'] || '';
-          const capacity = parseInt(row['Kapasitas'] || row['capacity'] || '36', 10) || 36;
-          const statusRaw = String(row['Status_Aktif'] || row['Status'] || 'YA').toUpperCase();
-          const isActive = statusRaw === 'YA' || statusRaw === 'TRUE' || statusRaw === '1' || statusRaw === 'AKTIF';
+        const code = ExcelService.getRowValue(row, ['Kode_Kelas', 'Kode Kelas', 'Kode', 'Code', 'ID Kelas']);
+        const name = ExcelService.getRowValue(row, ['Nama_Kelas', 'Nama Kelas', 'Nama', 'Name', 'Kelas']) || code;
+        if (code || name) {
+          const actualCode = (code || name).toUpperCase();
+          const actualName = name || actualCode;
+          const gradeStr = ExcelService.getRowValue(row, ['Tingkat', 'Grade', 'Kelas Tingkat', 'Level']);
+          const gradeVal = parseInt(gradeStr || '12', 10) || 12;
+          const major = ExcelService.getRowValue(row, ['Program_Keahlian', 'Program Keahlian', 'Jurusan', 'Major', 'Keahlian'], 'Umum');
+          const teacher = ExcelService.getRowValue(row, ['Wali_Kelas', 'Wali Kelas', 'Wali', 'HomeroomTeacher', 'Guru Wali'], '');
+          const capacityStr = ExcelService.getRowValue(row, ['Kapasitas', 'Capacity', 'Jumlah Kursi', 'Kuota']);
+          const capacity = parseInt(capacityStr || '36', 10) || 36;
+          const statusRaw = ExcelService.getRowValue(row, ['Status_Aktif', 'Status Aktif', 'Status', 'Aktif', 'Active'], 'YA').toUpperCase();
+          const isActive = statusRaw === 'YA' || statusRaw === 'TRUE' || statusRaw === '1' || statusRaw === 'AKTIF' || statusRaw === 'YES';
 
           const cls: ClassItem = {
             id: `class-imp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            code: String(code).trim().toUpperCase(),
-            name: String(name).trim(),
+            code: actualCode,
+            name: actualName,
             grade: gradeVal,
-            major: String(major).trim(),
-            homeroomTeacher: String(teacher).trim(),
+            major: major,
+            homeroomTeacher: teacher,
             capacity: capacity,
             isActive: isActive,
             createdAt: new Date().toISOString(),

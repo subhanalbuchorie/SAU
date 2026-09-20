@@ -32,6 +32,7 @@ import {
   deleteDocument,
   batchSaveDocuments,
   batchDeleteDocuments,
+  clearCollection,
   subscribeToCollection,
   testFirestoreConnection,
   isFirebaseActive
@@ -88,9 +89,89 @@ function setStorageItem<T>(key: string, value: T, notify = true): void {
 }
 
 export const StorageService = {
+  // Check if an item is legacy dummy data from earlier template
+  isDummyItem: (type: string, id: string): boolean => {
+    if (!id) return false;
+    if (type === 'students') {
+      return /^stu-0\d$/.test(id) || /^stu-1[0-5]$/.test(id) || id === 'stu-1' || id === 'stu-2';
+    }
+    if (type === 'classes') {
+      return id === 'class-1' || id === 'class-2' || id === 'class-3' || id === 'class-4';
+    }
+    if (type === 'rooms') {
+      return id === 'room-1' || id === 'room-2' || id === 'room-3' || id === 'room-4' || id === 'room-5';
+    }
+    if (type === 'supervisors') {
+      return /^sup-[1-8]$/.test(id);
+    }
+    if (type === 'subjects') {
+      return /^sub-[1-8]$/.test(id);
+    }
+    if (type === 'schedules') {
+      return /^sch-0[1-5]$/.test(id) || id === 'sch-special-01';
+    }
+    if (type === 'minutes') {
+      return id === 'min-01';
+    }
+    if (type === 'attendances') {
+      return id === 'att-01';
+    }
+    return false;
+  },
+
+  // Completely purge any legacy dummy data from localStorage & Firestore
+  purgeDummyData: () => {
+    try {
+      const students = StorageService.getStudents().filter((s) => !StorageService.isDummyItem('students', s.id));
+      const classes = StorageService.getClasses().filter((c) => !StorageService.isDummyItem('classes', c.id));
+      const rooms = StorageService.getRooms().filter((r) => !StorageService.isDummyItem('rooms', r.id));
+      const supervisors = StorageService.getSupervisors().filter((sup) => !StorageService.isDummyItem('supervisors', sup.id));
+      const subjects = StorageService.getSubjects().filter((sub) => !StorageService.isDummyItem('subjects', sub.id));
+      const schedules = StorageService.getSchedules().filter((sch) => !StorageService.isDummyItem('schedules', sch.id));
+      const minutes = StorageService.getExamMinutes().filter((m) => !StorageService.isDummyItem('minutes', m.id));
+      const attendances = StorageService.getStudentAttendances().filter((a) => !StorageService.isDummyItem('attendances', a.id));
+
+      setStorageItem(STORAGE_KEYS.STUDENTS, students, false);
+      setStorageItem(STORAGE_KEYS.CLASSES, classes, false);
+      setStorageItem(STORAGE_KEYS.ROOMS, rooms, false);
+      setStorageItem(STORAGE_KEYS.SUPERVISORS, supervisors, false);
+      setStorageItem(STORAGE_KEYS.SUBJECTS, subjects, false);
+      setStorageItem(STORAGE_KEYS.SCHEDULES, schedules, false);
+      setStorageItem(STORAGE_KEYS.MINUTES, minutes, false);
+      setStorageItem(STORAGE_KEYS.ATTENDANCES, attendances, false);
+
+      if (isFirebaseActive) {
+        const dummyStudentIds = ['stu-01', 'stu-02', 'stu-03', 'stu-04', 'stu-05', 'stu-06', 'stu-07', 'stu-08', 'stu-09', 'stu-10', 'stu-11', 'stu-12', 'stu-13', 'stu-14', 'stu-15', 'stu-1', 'stu-2'];
+        const dummyClassIds = ['class-1', 'class-2', 'class-3', 'class-4'];
+        const dummyRoomIds = ['room-1', 'room-2', 'room-3', 'room-4', 'room-5'];
+        const dummySupIds = ['sup-1', 'sup-2', 'sup-3', 'sup-4', 'sup-5', 'sup-6', 'sup-7', 'sup-8'];
+        const dummySubIds = ['sub-1', 'sub-2', 'sub-3', 'sub-4', 'sub-5', 'sub-6', 'sub-7', 'sub-8'];
+        const dummySchIds = ['sch-01', 'sch-02', 'sch-03', 'sch-04', 'sch-05', 'sch-special-01'];
+        const dummyMinIds = ['min-01'];
+        const dummyAttIds = ['att-01'];
+
+        batchDeleteDocuments('students', dummyStudentIds);
+        batchDeleteDocuments('classes', dummyClassIds);
+        batchDeleteDocuments('rooms', dummyRoomIds);
+        batchDeleteDocuments('supervisors', dummySupIds);
+        batchDeleteDocuments('subjects', dummySubIds);
+        batchDeleteDocuments('schedules', dummySchIds);
+        batchDeleteDocuments('minutes', dummyMinIds);
+        batchDeleteDocuments('attendances', dummyAttIds);
+      }
+
+      localStorage.setItem('aus_dummy_purged_v3', 'true');
+      window.dispatchEvent(new Event('storage-updated'));
+    } catch (err) {
+      console.error('Failed to purge dummy data:', err);
+    }
+  },
+
   // Init storage on boot
   initStorage: () => {
-    if (!localStorage.getItem(STORAGE_KEYS.SETTINGS)) {
+    if (localStorage.getItem('aus_dummy_purged_v3') !== 'true') {
+      StorageService.purgeDummyData();
+    } else if (!localStorage.getItem(STORAGE_KEYS.SETTINGS)) {
       StorageService.resetToDefault();
     }
     StorageService.initRealTimeSync();
@@ -119,10 +200,10 @@ export const StorageService = {
     // 2. Rooms
     subscribeToCollection<Room>('rooms', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.ROOMS, items, true);
-      } else {
-        const cur = StorageService.getRooms();
-        if (cur && cur.length > 0) batchSaveDocuments('rooms', cur);
+        const valid = items.filter((r) => !StorageService.isDummyItem('rooms', r.id));
+        setStorageItem(STORAGE_KEYS.ROOMS, valid, true);
+        const dummyIds = items.filter((r) => StorageService.isDummyItem('rooms', r.id)).map((r) => r.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('rooms', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -130,10 +211,10 @@ export const StorageService = {
     // 3. Classes
     subscribeToCollection<ClassItem>('classes', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.CLASSES, items, true);
-      } else {
-        const cur = StorageService.getClasses();
-        if (cur && cur.length > 0) batchSaveDocuments('classes', cur);
+        const valid = items.filter((c) => !StorageService.isDummyItem('classes', c.id));
+        setStorageItem(STORAGE_KEYS.CLASSES, valid, true);
+        const dummyIds = items.filter((c) => StorageService.isDummyItem('classes', c.id)).map((c) => c.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('classes', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -141,10 +222,10 @@ export const StorageService = {
     // 4. Subjects
     subscribeToCollection<Subject>('subjects', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.SUBJECTS, items, true);
-      } else {
-        const cur = StorageService.getSubjects();
-        if (cur && cur.length > 0) batchSaveDocuments('subjects', cur);
+        const valid = items.filter((s) => !StorageService.isDummyItem('subjects', s.id));
+        setStorageItem(STORAGE_KEYS.SUBJECTS, valid, true);
+        const dummyIds = items.filter((s) => StorageService.isDummyItem('subjects', s.id)).map((s) => s.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('subjects', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -152,10 +233,10 @@ export const StorageService = {
     // 5. Supervisors
     subscribeToCollection<Supervisor>('supervisors', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.SUPERVISORS, items, true);
-      } else {
-        const cur = StorageService.getSupervisors();
-        if (cur && cur.length > 0) batchSaveDocuments('supervisors', cur);
+        const valid = items.filter((s) => !StorageService.isDummyItem('supervisors', s.id));
+        setStorageItem(STORAGE_KEYS.SUPERVISORS, valid, true);
+        const dummyIds = items.filter((s) => StorageService.isDummyItem('supervisors', s.id)).map((s) => s.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('supervisors', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -163,10 +244,10 @@ export const StorageService = {
     // 6. Students
     subscribeToCollection<Student>('students', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.STUDENTS, items, true);
-      } else {
-        const cur = StorageService.getStudents();
-        if (cur && cur.length > 0) batchSaveDocuments('students', cur);
+        const valid = items.filter((s) => !StorageService.isDummyItem('students', s.id));
+        setStorageItem(STORAGE_KEYS.STUDENTS, valid, true);
+        const dummyIds = items.filter((s) => StorageService.isDummyItem('students', s.id)).map((s) => s.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('students', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -174,10 +255,10 @@ export const StorageService = {
     // 7. Schedules
     subscribeToCollection<ExamSchedule>('schedules', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.SCHEDULES, items, true);
-      } else {
-        const cur = StorageService.getSchedules();
-        if (cur && cur.length > 0) batchSaveDocuments('schedules', cur);
+        const valid = items.filter((s) => !StorageService.isDummyItem('schedules', s.id));
+        setStorageItem(STORAGE_KEYS.SCHEDULES, valid, true);
+        const dummyIds = items.filter((s) => StorageService.isDummyItem('schedules', s.id)).map((s) => s.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('schedules', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -185,10 +266,10 @@ export const StorageService = {
     // 8. Minutes
     subscribeToCollection<ExamMinute>('minutes', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.MINUTES, items, true);
-      } else {
-        const cur = StorageService.getExamMinutes();
-        if (cur && cur.length > 0) batchSaveDocuments('minutes', cur);
+        const valid = items.filter((m) => !StorageService.isDummyItem('minutes', m.id));
+        setStorageItem(STORAGE_KEYS.MINUTES, valid, true);
+        const dummyIds = items.filter((m) => StorageService.isDummyItem('minutes', m.id)).map((m) => m.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('minutes', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -196,10 +277,10 @@ export const StorageService = {
     // 9. Attendances
     subscribeToCollection<StudentAttendance>('attendances', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.ATTENDANCES, items, true);
-      } else {
-        const cur = StorageService.getStudentAttendances();
-        if (cur && cur.length > 0) batchSaveDocuments('attendances', cur);
+        const valid = items.filter((a) => !StorageService.isDummyItem('attendances', a.id));
+        setStorageItem(STORAGE_KEYS.ATTENDANCES, valid, true);
+        const dummyIds = items.filter((a) => StorageService.isDummyItem('attendances', a.id)).map((a) => a.id);
+        if (dummyIds.length > 0) batchDeleteDocuments('attendances', dummyIds);
       }
       notifySyncStatus(true);
     });
@@ -216,9 +297,6 @@ export const StorageService = {
     subscribeToCollection<AuditLog>('auditLogs', (items) => {
       if (items && items.length > 0) {
         setStorageItem(STORAGE_KEYS.AUDIT_LOGS, items, true);
-      } else {
-        const cur = StorageService.getAuditLogs();
-        if (cur && cur.length > 0) batchSaveDocuments('auditLogs', cur);
       }
       notifySyncStatus(true);
     });
@@ -234,35 +312,74 @@ export const StorageService = {
     };
   },
 
-  // Reset all to initial mock
+  // Reset all to clean default (no dummy records)
   resetToDefault: () => {
     setStorageItem(STORAGE_KEYS.SETTINGS, initialSchoolSetting);
-    setStorageItem(STORAGE_KEYS.ROOMS, initialRooms);
-    setStorageItem(STORAGE_KEYS.CLASSES, initialClasses);
-    setStorageItem(STORAGE_KEYS.SUBJECTS, initialSubjects);
-    setStorageItem(STORAGE_KEYS.SUPERVISORS, initialSupervisors);
-    setStorageItem(STORAGE_KEYS.STUDENTS, initialStudents);
-    setStorageItem(STORAGE_KEYS.SCHEDULES, initialSchedules);
-    setStorageItem(STORAGE_KEYS.MINUTES, initialExamMinutes);
-    setStorageItem(STORAGE_KEYS.ATTENDANCES, initialStudentAttendances);
+    setStorageItem(STORAGE_KEYS.ROOMS, []);
+    setStorageItem(STORAGE_KEYS.CLASSES, []);
+    setStorageItem(STORAGE_KEYS.SUBJECTS, []);
+    setStorageItem(STORAGE_KEYS.SUPERVISORS, []);
+    setStorageItem(STORAGE_KEYS.STUDENTS, []);
+    setStorageItem(STORAGE_KEYS.SCHEDULES, []);
+    setStorageItem(STORAGE_KEYS.MINUTES, []);
+    setStorageItem(STORAGE_KEYS.ATTENDANCES, []);
     setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, []);
     setStorageItem(STORAGE_KEYS.USERS, initialUsers);
     setStorageItem(STORAGE_KEYS.AUDIT_LOGS, initialAuditLogs);
     setStorageItem(STORAGE_KEYS.CURRENT_USER, initialUsers[0]);
-    StorageService.addAuditLog('Reset Database', 'System', undefined, 'Mengembalikan seluruh data ke data bawaan.');
+    StorageService.addAuditLog('Reset Database', 'System', undefined, 'Mengosongkan data dan menyetel ulang sistem.');
 
     if (isFirebaseActive) {
       saveDocument('settings', initialSchoolSetting.id, initialSchoolSetting);
-      batchSaveDocuments('rooms', initialRooms);
-      batchSaveDocuments('classes', initialClasses);
-      batchSaveDocuments('subjects', initialSubjects);
-      batchSaveDocuments('supervisors', initialSupervisors);
-      batchSaveDocuments('students', initialStudents);
-      batchSaveDocuments('schedules', initialSchedules);
-      batchSaveDocuments('minutes', initialExamMinutes);
-      batchSaveDocuments('attendances', initialStudentAttendances);
-      batchSaveDocuments('auditLogs', initialAuditLogs);
+      clearCollection('rooms');
+      clearCollection('classes');
+      clearCollection('subjects');
+      clearCollection('supervisors');
+      clearCollection('students');
+      clearCollection('schedules');
+      clearCollection('minutes');
+      clearCollection('attendances');
+      clearCollection('makeups');
     }
+  },
+
+  // Master method to clear all data
+  clearAllDatabaseData: async (options: { includeSettings?: boolean; includeLogs?: boolean } = {}) => {
+    setStorageItem(STORAGE_KEYS.STUDENTS, []);
+    setStorageItem(STORAGE_KEYS.CLASSES, []);
+    setStorageItem(STORAGE_KEYS.ROOMS, []);
+    setStorageItem(STORAGE_KEYS.SUPERVISORS, []);
+    setStorageItem(STORAGE_KEYS.SUBJECTS, []);
+    setStorageItem(STORAGE_KEYS.SCHEDULES, []);
+    setStorageItem(STORAGE_KEYS.MINUTES, []);
+    setStorageItem(STORAGE_KEYS.ATTENDANCES, []);
+    setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, []);
+
+    if (options.includeLogs) {
+      setStorageItem(STORAGE_KEYS.AUDIT_LOGS, initialAuditLogs);
+    }
+    if (options.includeSettings) {
+      setStorageItem(STORAGE_KEYS.SETTINGS, initialSchoolSetting);
+    }
+
+    if (isFirebaseActive) {
+      await Promise.allSettled([
+        clearCollection('students'),
+        clearCollection('classes'),
+        clearCollection('rooms'),
+        clearCollection('supervisors'),
+        clearCollection('subjects'),
+        clearCollection('schedules'),
+        clearCollection('minutes'),
+        clearCollection('attendances'),
+        clearCollection('makeups'),
+        options.includeLogs ? clearCollection('auditLogs') : Promise.resolve(),
+        options.includeSettings ? saveDocument('settings', initialSchoolSetting.id, initialSchoolSetting) : Promise.resolve()
+      ]);
+    }
+
+    window.dispatchEvent(new Event('storage-updated'));
+    return { success: true, message: 'Seluruh data ujian & master berhasil dikosongkan.' };
   },
 
   resetToInitialData: () => {
@@ -375,11 +492,28 @@ export const StorageService = {
     setStorageItem(STORAGE_KEYS.CLASSES, classes);
     saveDocument('classes', saved.id, saved);
   },
-  deleteClass: (classId: string): { success: boolean; message: string } => {
+  deleteClass: (classId: string, force: boolean = false): { success: boolean; message: string } => {
     const students = StorageService.getStudents();
-    if (students.some((s) => s.classId === classId)) {
-      return { success: false, message: 'Kelas ini masih memiliki data siswa terdaftar. Pindahkan atau hapus siswa terlebih dahulu.' };
+    const linkedStudents = students.filter((s) => s.classId === classId);
+    if (linkedStudents.length > 0 && !force) {
+      return {
+        success: false,
+        message: `Kelas ini masih memiliki ${linkedStudents.length} siswa terdaftar. Gunakan opsi hapus paksa atau hapus/pindahkan siswa terlebih dahulu.`
+      };
     }
+
+    // If force is true, unlink students of this class
+    if (linkedStudents.length > 0 && force) {
+      const updatedStudents = students.map((s) =>
+        s.classId === classId ? { ...s, classId: '', className: '', updatedAt: new Date().toISOString() } : s
+      );
+      setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents, false);
+      const modified = updatedStudents.filter((s) => s.classId === '');
+      if (modified.length > 0) {
+        batchSaveDocuments('students', modified);
+      }
+    }
+
     const filtered = StorageService.getClasses().filter((c) => c.id !== classId);
     setStorageItem(STORAGE_KEYS.CLASSES, filtered);
     deleteDocument('classes', classId);
@@ -388,9 +522,9 @@ export const StorageService = {
   },
   deleteMultipleClasses: (classIds: string[], force: boolean = false): { success: boolean; deletedCount: number; blockedCount: number; message: string } => {
     const students = StorageService.getStudents();
-    const classesWithStudents = new Set(students.map((s) => s.classId));
-    const classes = StorageService.getClasses();
     const toDeleteSet = new Set(classIds);
+    const classesWithStudents = new Set(students.filter(s => toDeleteSet.has(s.classId)).map((s) => s.classId));
+    const classes = StorageService.getClasses();
     let deletedCount = 0;
     let blockedCount = 0;
     const deletedIds: string[] = [];
@@ -409,6 +543,26 @@ export const StorageService = {
       return true;
     });
 
+    // If force is true, unlink students referencing the deleted classes
+    if (force && deletedIds.length > 0) {
+      const delSet = new Set(deletedIds);
+      let anyChanged = false;
+      const updatedStudents = students.map((s) => {
+        if (delSet.has(s.classId)) {
+          anyChanged = true;
+          return { ...s, classId: '', className: '', updatedAt: new Date().toISOString() };
+        }
+        return s;
+      });
+      if (anyChanged) {
+        setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents, false);
+        const changedList = updatedStudents.filter((s) => delSet.has(s.classId));
+        if (changedList.length > 0) {
+          batchSaveDocuments('students', changedList);
+        }
+      }
+    }
+
     setStorageItem(STORAGE_KEYS.CLASSES, remaining);
     if (deletedIds.length > 0) {
       batchDeleteDocuments('classes', deletedIds);
@@ -425,6 +579,9 @@ export const StorageService = {
   },
   clearAllClasses: (force: boolean = false): { success: boolean; deletedCount: number; blockedCount: number; message: string } => {
     const allClasses = StorageService.getClasses();
+    if (allClasses.length === 0) {
+      return { success: true, deletedCount: 0, blockedCount: 0, message: 'Data kelas sudah kosong.' };
+    }
     return StorageService.deleteMultipleClasses(allClasses.map((c) => c.id), force);
   },
   saveMultipleClasses: (newClasses: ClassItem[]) => {
@@ -595,11 +752,13 @@ export const StorageService = {
     const existing = StorageService.getSupervisors();
     const map = new Map<string, Supervisor>();
     existing.forEach((sup) => {
-      const key = sup.nip ? sup.nip.trim() : sup.name.trim().toLowerCase();
+      const hasRealNip = sup.nip && sup.nip.trim() !== '' && sup.nip.trim() !== '-';
+      const key = hasRealNip ? `nip:${sup.nip.trim()}` : `name:${sup.name.trim().toLowerCase()}`;
       map.set(key, sup);
     });
     newSupervisors.forEach((sup) => {
-      const key = sup.nip ? sup.nip.trim() : sup.name.trim().toLowerCase();
+      const hasRealNip = sup.nip && sup.nip.trim() !== '' && sup.nip.trim() !== '-';
+      const key = hasRealNip ? `nip:${sup.nip.trim()}` : `name:${sup.name.trim().toLowerCase()}`;
       const prev = map.get(key);
       if (prev) {
         map.set(key, { ...prev, ...sup, id: prev.id, updatedAt: new Date().toISOString() });
@@ -641,8 +800,27 @@ export const StorageService = {
   saveMultipleStudents: (newStudents: Student[]) => {
     const existing = StorageService.getStudents();
     const map = new Map<string, Student>();
-    existing.forEach((s) => map.set(s.id, s));
-    newStudents.forEach((s) => map.set(s.id, s));
+    const nisMap = new Map<string, string>(); // nis -> id
+    existing.forEach((s) => {
+      map.set(s.id, s);
+      if (s.nis && s.nis.trim() !== '') nisMap.set(s.nis.trim(), s.id);
+    });
+    newStudents.forEach((s) => {
+      const cleanNis = s.nis ? s.nis.trim() : '';
+      const existingId = cleanNis ? nisMap.get(cleanNis) : undefined;
+      if (existingId && map.has(existingId)) {
+        const prev = map.get(existingId)!;
+        map.set(existingId, {
+          ...prev,
+          ...s,
+          id: existingId,
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        map.set(s.id, s);
+        if (cleanNis) nisMap.set(cleanNis, s.id);
+      }
+    });
     const merged = Array.from(map.values());
     setStorageItem(STORAGE_KEYS.STUDENTS, merged);
     batchSaveDocuments('students', merged);
@@ -672,6 +850,9 @@ export const StorageService = {
     setStorageItem(STORAGE_KEYS.STUDENTS, []);
     if (students.length > 0) {
       batchDeleteDocuments('students', students.map((s) => s.id));
+    }
+    if (isFirebaseActive) {
+      clearCollection('students');
     }
     StorageService.addAuditLog('Hapus Semua Siswa', 'Student', undefined, `Menghapus seluruh data siswa (${count} siswa).`);
     return { success: true, deletedCount: count, message: `Berhasil menghapus seluruh data siswa (${count} siswa).` };

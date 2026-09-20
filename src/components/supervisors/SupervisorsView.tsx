@@ -214,26 +214,26 @@ export const SupervisorsView: React.FC<SupervisorsViewProps> = ({
       const newSupervisors: Supervisor[] = [];
 
       rows.forEach((row: any) => {
-        const name = row['Nama_Pengawas'] || row['Nama'] || row['name'];
+        const name = ExcelService.getRowValue(row, ['Nama_Pengawas', 'Nama Pengawas', 'Nama', 'Nama Lengkap', 'Name', 'Guru', 'Nama Guru']);
         if (name) {
-          const nip = row['NIP'] || row['nip'] || '';
-          const genderRaw = (row['Jenis_Kelamin'] || row['L_P'] || row['gender'] || 'L').toString().toUpperCase();
-          const gender = genderRaw.startsWith('P') ? 'P' : 'L';
-          const subject = row['Mata_Pelajaran'] || row['Mapel'] || row['subject'] || '';
-          const phone = row['Nomor_HP'] || row['Nomor_Telepon'] || row['No_HP'] || row['phone'] || '';
-          const statusRaw = String(row['Status'] || row['Status_Aktif'] || 'Aktif').toUpperCase();
-          const isActive = statusRaw === 'AKTIF' || statusRaw === 'YA' || statusRaw === 'TRUE' || statusRaw === '1';
-          const notes = row['Keterangan'] || row['Catatan'] || row['notes'] || '';
+          const nip = ExcelService.getRowValue(row, ['NIP', 'nip', 'Nomor Induk Pegawai', 'ID']);
+          const genderRaw = ExcelService.getRowValue(row, ['Jenis_Kelamin', 'Jenis Kelamin', 'JK', 'L_P', 'L/P', 'Gender'], 'L').toUpperCase();
+          const gender = genderRaw.startsWith('P') || genderRaw === 'PEREMPUAN' || genderRaw === 'WANITA' ? 'P' : 'L';
+          const subject = ExcelService.getRowValue(row, ['Mata_Pelajaran', 'Mata Pelajaran', 'Mapel', 'Subject', 'Bidang Studi']);
+          const phone = ExcelService.getRowValue(row, ['Nomor_HP', 'Nomor HP', 'Nomor_Telepon', 'Nomor Telepon', 'No_HP', 'No HP', 'Phone', 'Telepon', 'WA']);
+          const statusRaw = ExcelService.getRowValue(row, ['Status', 'Status_Aktif', 'Status Aktif', 'Aktif', 'Active'], 'Aktif').toUpperCase();
+          const isActive = statusRaw === 'AKTIF' || statusRaw === 'YA' || statusRaw === 'TRUE' || statusRaw === '1' || statusRaw === 'YES';
+          const notes = ExcelService.getRowValue(row, ['Keterangan', 'Catatan', 'Notes', 'Ket']);
 
           const sup: Supervisor = {
             id: `sup-imp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            name: String(name).trim(),
-            nip: nip ? String(nip).trim() : '-',
+            name: name,
+            nip: nip && nip !== '-' ? nip : '-',
             gender: gender,
-            subject: subject ? String(subject).trim() : undefined,
-            phone: phone ? String(phone).trim() : '-',
+            subject: subject || undefined,
+            phone: phone && phone !== '-' ? phone : '-',
             isActive: isActive,
-            notes: notes ? String(notes).trim() : undefined,
+            notes: notes || undefined,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           };

@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { Student, ClassItem, SchoolSetting, StudentStatus } from '../../types';
 import { StorageService } from '../../lib/storage';
-import { ExcelService } from '../../lib/excel';
+import { ExcelService, normalizeKey } from '../../lib/excel';
 import { PrintHeader } from '../common/PrintHeader';
 import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
 import { triggerA4Print } from '../../lib/sessionHelper';
@@ -272,45 +272,120 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
     try {
       const rows = await ExcelService.parseExcelFile(file);
       if (rows.length === 0) {
-        alert('File Excel kosong.');
+        setErrorMessage('File Excel kosong atau format tidak sesuai.');
+        setTimeout(() => setErrorMessage(null), 4000);
         return;
       }
 
       let count = 0;
+      const newStudents: Student[] = [];
+      const newClassesToCreate: ClassItem[] = [];
+      const currentClasses = [...classes];
+
+      const findOrCreateClass = (rawClass: string, studentMajor: string): ClassItem | undefined => {
+        if (!rawClass || rawClass.trim() === '') return currentClasses[0];
+        const trimmed = rawClass.trim();
+        const norm = normalizeKey(trimmed);
+
+        // Try exact/case/norm match
+        const found = currentClasses.find(
+          (c) =>
+            c.id === trimmed ||
+            c.code.trim().toUpperCase() === trimmed.toUpperCase() ||
+            c.name.trim().toLowerCase() === trimmed.toLowerCase() ||
+            normalizeKey(c.code) === norm ||
+            normalizeKey(c.name) === norm
+        );
+        if (found) return found;
+
+        // Auto create missing class
+        let grade = 12;
+        if (/^(10|x\b)/i.test(trimmed)) grade = 10;
+        else if (/^(11|xi\b)/i.test(trimmed)) grade = 11;
+        else if (/^(12|xii\b)/i.test(trimmed)) grade = 12;
+
+        const newClass: ClassItem = {
+          id: `class-auto-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          code: trimmed.toUpperCase().replace(/\s+/g, '-'),
+          name: trimmed,
+          grade,
+          major: studentMajor || 'Umum',
+          homeroomTeacher: '',
+          capacity: 36,
+          isActive: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        currentClasses.push(newClass);
+        newClassesToCreate.push(newClass);
+        return newClass;
+      };
+
       rows.forEach((row: any) => {
-        const nis = row['NIS'] || row['nis'];
-        const name = row['Nama_Lengkap'] || row['Nama'] || row['name'];
+        const nis = ExcelService.getRowValue(row, ['NIS', 'nis', 'Nomor_Induk', 'Nomor Induk', 'No Induk', 'ID Siswa']);
+        const name = ExcelService.getRowValue(row, ['Nama_Lengkap', 'Nama Lengkap', 'Nama', 'Nama Siswa', 'Name']);
+
         if (nis && name) {
-          const classCode = row['Kode_Kelas'] || row['Kelas'];
-          const matchedClass = classes.find(
-            (c) => c.code === classCode || c.name === classCode
-          );
+          const nisn = ExcelService.getRowValue(row, ['NISN', 'nisn', 'Nomor_NISN', 'No NISN']);
+          const genderRaw = ExcelService.getRowValue(row, ['Jenis_Kelamin', 'Jenis Kelamin', 'JK', 'L_P', 'L/P', 'Gender'], 'L').toUpperCase();
+          const gender = genderRaw.startsWith('P') || genderRaw === 'PEREMPUAN' || genderRaw === 'WANITA' ? 'P' : 'L';
+          const birthPlace = ExcelService.getRowValue(row, ['Tempat_Lahir', 'Tempat Lahir', 'Tempat', 'BirthPlace']);
+          let birthDate = ExcelService.getRowValue(row, ['Tanggal_Lahir', 'Tanggal Lahir', 'Tgl Lahir', 'BirthDate']);
+          if (birthDate && birthDate.includes('T')) {
+            birthDate = birthDate.split('T')[0];
+          }
+
+          const rawClass = ExcelService.getRowValue(row, ['Kode_Kelas', 'Kode Kelas', 'Kelas', 'Nama_Kelas', 'Nama Kelas', 'Class', 'Rombel']);
+          const major = ExcelService.getRowValue(row, ['Jurusan', 'Program_Keahlian', 'Program Keahlian', 'Major', 'Keahlian']);
+          const matchedClass = findOrCreateClass(rawClass, major);
+
+          const examNumber = ExcelService.getRowValue(row, ['Nomor_Peserta', 'Nomor Peserta', 'No_Peserta', 'No Peserta', 'No Ujian', 'ExamNumber']);
+          const statusRaw = ExcelService.getRowValue(row, ['Status', 'Status_Siswa', 'Status Siswa', 'Status_Aktif'], 'AKTIF').toUpperCase();
+          const status: StudentStatus = statusRaw === 'MUTASI' ? 'MUTASI' : statusRaw === 'NON_AKTIF' || statusRaw === 'TIDAK AKTIF' ? 'NON_AKTIF' : 'AKTIF';
+          const notes = ExcelService.getRowValue(row, ['Keterangan', 'Catatan', 'Notes', 'Ket']);
+
           const stu: Student = {
             id: `stu-imp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            nis: String(nis),
-            nisn: String(row['NISN'] || row['nisn'] || ''),
-            name: String(name),
-            gender: (row['Jenis_Kelamin'] || row['L_P'] || 'L') === 'P' ? 'P' : 'L',
-            birthPlace: row['Tempat_Lahir'] || '',
-            birthDate: row['Tanggal_Lahir'] || '',
-            classId: matchedClass ? matchedClass.id : classes[0]?.id || '',
-            major: row['Jurusan'] || matchedClass?.major || '',
-            examNumber: row['Nomor_Peserta'] || '',
-            status: (row['Status'] as any) || 'AKTIF',
-            notes: row['Keterangan'] || '',
+            nis: String(nis).trim(),
+            nisn: String(nisn || '').trim(),
+            name: String(name).trim(),
+            gender,
+            birthPlace: birthPlace ? String(birthPlace).trim() : undefined,
+            birthDate: birthDate ? String(birthDate).trim() : undefined,
+            classId: matchedClass ? matchedClass.id : '',
+            className: matchedClass ? matchedClass.name : (rawClass || undefined),
+            major: major ? String(major).trim() : (matchedClass?.major || 'Umum'),
+            examNumber: examNumber ? String(examNumber).trim() : undefined,
+            status,
+            notes: notes ? String(notes).trim() : undefined,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           };
-          StorageService.saveStudent(stu);
+          newStudents.push(stu);
           count++;
         }
       });
-      onRefresh();
-      setSuccessMessage(`Berhasil impor ${count} siswa dari Excel.`);
-      setTimeout(() => setSuccessMessage(null), 4000);
+
+      if (newClassesToCreate.length > 0) {
+        StorageService.saveMultipleClasses(newClassesToCreate);
+      }
+
+      if (newStudents.length > 0) {
+        StorageService.saveMultipleStudents(newStudents);
+        onRefresh();
+        setSuccessMessage(`Berhasil impor ${count} siswa dari Excel.${newClassesToCreate.length > 0 ? ` (${newClassesToCreate.length} kelas baru otomatis dibuat).` : ''}`);
+      } else {
+        setErrorMessage('Tidak ada data siswa yang valid ditemukan dalam file Excel. Pastikan kolom NIS dan Nama terisi.');
+      }
+      setTimeout(() => {
+        setSuccessMessage(null);
+        setErrorMessage(null);
+      }, 4000);
     } catch (err: any) {
-      setErrorMessage(`Gagal import Excel: ${err.message}`);
+      setErrorMessage(`Gagal import Excel: ${err.message || 'Format tidak sesuai'}`);
       setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      e.target.value = '';
     }
   };
 

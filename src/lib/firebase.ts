@@ -209,3 +209,17 @@ export async function isCollectionEmpty(collectionName: string): Promise<boolean
     return true;
   }
 }
+
+// Clear all documents in a collection
+export async function clearCollection(collectionName: string): Promise<void> {
+  try {
+    const snap = await getDocs(collection(db, collectionName));
+    const ids = snap.docs.map((d) => d.id);
+    if (ids.length > 0) {
+      await batchDeleteDocuments(collectionName, ids);
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, collectionName);
+  }
+}
+

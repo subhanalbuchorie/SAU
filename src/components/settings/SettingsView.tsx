@@ -9,7 +9,10 @@ import {
   User,
   Calendar,
   FileText,
-  Trash2
+  Trash2,
+  Database,
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 import { SchoolSetting, Student, ClassItem } from '../../types';
 import { StorageService } from '../../lib/storage';
@@ -138,6 +141,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const [showConfirmGen, setShowConfirmGen] = useState(false);
+  const [showConfirmClearAll, setShowConfirmClearAll] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+
+  const handlePurgeDummy = async () => {
+    setIsClearing(true);
+    try {
+      StorageService.purgeDummyData();
+      if (onReloadStudents) onReloadStudents();
+      onRefresh?.();
+      setSuccessMessage('Sisa data dummy berhasil dibersihkan dari database & penyimpanan lokal!');
+      setTimeout(() => setSuccessMessage(null), 4000);
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
+  const handleClearAllDatabase = async () => {
+    setIsClearing(true);
+    try {
+      await StorageService.clearAllDatabaseData();
+      if (onReloadStudents) onReloadStudents();
+      onRefresh?.();
+      setShowConfirmClearAll(false);
+      setSuccessMessage('Seluruh data siswa, kelas, ruang, pengawas, mapel, dan jadwal berhasil dikosongkan!');
+      setTimeout(() => setSuccessMessage(null), 5000);
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   const handleGenerateExamNumbers = () => {
     StorageService.generateExamNumbers(formData.examNumberFormat, students, classes);
@@ -661,13 +695,132 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="flex justify-end">
           <button
             type="submit"
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-2 transition-all"
+            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-2 transition-all cursor-pointer"
           >
             <Save className="w-4 h-4" />
             Simpan Seluruh Pengaturan
           </button>
         </div>
       </form>
+
+      {/* Database Maintenance & Purge Section */}
+      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4 mt-8">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+          <Database className="w-4 h-4 text-rose-600" />
+          <div>
+            <h3 className="text-sm font-bold text-slate-800">
+              Manajemen Data & Pembersihan Database
+            </h3>
+            <p className="text-xs text-slate-500">
+              Opsi untuk membersihkan sisa data dummy atau mengosongkan seluruh data sebelum import baru.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          {/* Purge Dummy Only */}
+          <div className="p-4 rounded-lg border border-amber-200 bg-amber-50/50 flex flex-col justify-between">
+            <div className="space-y-1.5 mb-3">
+              <h4 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                <RefreshCw className={`w-3.5 h-3.5 text-amber-700 ${isClearing ? 'animate-spin' : ''}`} />
+                Bersihkan Sisa Data Dummy
+              </h4>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Hanya menghapus data contoh bawaan (siswa, kelas, pengawas dummy). Data riil yang telah Anda impor atau simpan tidak akan terhapus.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isClearing}
+              onClick={handlePurgeDummy}
+              className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isClearing ? 'animate-spin' : ''}`} />
+              <span>Bersihkan Data Dummy</span>
+            </button>
+          </div>
+
+          {/* Reset All Master Data */}
+          <div className="p-4 rounded-lg border border-rose-200 bg-rose-50/50 flex flex-col justify-between">
+            <div className="space-y-1.5 mb-3">
+              <h4 className="text-xs font-bold text-rose-900 flex items-center gap-1.5">
+                <Trash2 className="w-3.5 h-3.5 text-rose-700" />
+                Kosongkan Seluruh Data Master & Ujian
+              </h4>
+              <p className="text-[11px] text-rose-800 leading-relaxed">
+                Menghapus seluruh siswa, kelas, ruang, pengawas, mapel, dan jadwal dari database dan penyimpanan lokal sehingga siap diimpor dari awal.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isClearing}
+              onClick={() => setShowConfirmClearAll(true)}
+              className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Kosongkan Semua Data</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Confirmation Modal for Clearing Database */}
+      {showConfirmClearAll && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-5 shadow-xl border border-slate-200 animate-in fade-in zoom-in-95">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Konfirmasi Pengosongan Data</h3>
+                <p className="text-xs text-slate-500">Tindakan ini akan mengosongkan seluruh data ujian.</p>
+              </div>
+            </div>
+
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-800 space-y-1.5 my-3">
+              <p className="font-semibold">Data yang akan dihapus bersih:</p>
+              <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+                <li>Data Seluruh Siswa ({students.length} siswa)</li>
+                <li>Data Seluruh Kelas ({classes.length} kelas)</li>
+                <li>Data Ruangan, Pengawas, Mata Pelajaran & Jadwal Ujian</li>
+              </ul>
+              <p className="text-[11px] text-rose-600 pt-1 font-medium">
+                Pengaturan sekolah & akun login tetap dipertahankan.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isClearing}
+                onClick={() => setShowConfirmClearAll(false)}
+                className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-xs font-medium cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isClearing}
+                onClick={handleClearAllDatabase}
+                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                {isClearing ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Sedang Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Kosongkan Sekarang</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
