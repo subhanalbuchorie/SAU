@@ -96,6 +96,27 @@ export const ExamMinutesView: React.FC<ExamMinutesViewProps> = ({
     if (!activeSchedule) return [];
     const map = new Map<string, { student: Student; classItem?: ClassItem; subject?: Subject }>();
 
+    // Check if room has permanent student mapping
+    const roomStudents = StorageService.getStudentsForRoom(activeSchedule.roomId);
+    if (roomStudents.length > 0) {
+      // Map subjects per class from the schedule's groups
+      const classSubjectMap = new Map<string, Subject>();
+      activeSchedule.groups.forEach((grp) => {
+        const sub = subjectMap.get(grp.subjectId);
+        if (sub) classSubjectMap.set(grp.classId, sub);
+      });
+      // Fallback default subject if group subject not mapped per class
+      const defaultSub = activeSchedule.groups[0] ? subjectMap.get(activeSchedule.groups[0].subjectId) : undefined;
+
+      roomStudents.forEach((s) => {
+        const cls = classMap.get(s.classId);
+        const sub = classSubjectMap.get(s.classId) || defaultSub;
+        map.set(s.id, { student: s, classItem: cls, subject: sub });
+      });
+
+      return Array.from(map.values());
+    }
+
     activeSchedule.groups.forEach((grp) => {
       const cls = classMap.get(grp.classId);
       const sub = subjectMap.get(grp.subjectId);

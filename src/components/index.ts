@@ -4,6 +4,7 @@ export * from './dashboard/DashboardView';
 export * from './students/StudentsView';
 export * from './classes/ClassesView';
 export * from './rooms/RoomsView';
+export * from './rooms/RoomMappingView';
 export * from './subjects/SubjectsView';
 export * from './supervisors/SupervisorsView';
 export * from './settings/SettingsView';

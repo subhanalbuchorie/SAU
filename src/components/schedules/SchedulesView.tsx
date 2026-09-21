@@ -21,11 +21,14 @@ import {
   X,
   UserPlus,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  LayoutGrid,
+  Check
 } from 'lucide-react';
 import {
   ExamSchedule,
   ExamScheduleGroup,
+  ScheduleSupervisorAssignment,
   Room,
   ClassItem,
   Subject,
@@ -52,6 +55,7 @@ interface SchedulesViewProps {
   students: Student[];
   settings: SchoolSetting;
   onRefresh: () => void;
+  onNavigateToRoomMapping?: () => void;
 }
 
 export const SchedulesView: React.FC<SchedulesViewProps> = ({
@@ -62,12 +66,25 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
   supervisors,
   students,
   settings,
-  onRefresh
+  onRefresh,
+  onNavigateToRoomMapping
 }) => {
-  const [activeViewMode, setActiveViewMode] = useState<'LIST' | 'BY_ROOM' | 'BY_DATE'>('LIST');
+  const [activeViewMode, setActiveViewMode] = useState<'MATRIX' | 'LIST' | 'BY_ROOM' | 'BY_DATE'>('MATRIX');
   const [selectedDateFilter, setSelectedDateFilter] = useState<string>('ALL');
   const [selectedRoomFilter, setSelectedRoomFilter] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Matrix View state
+  const [matrixDate, setMatrixDate] = useState<string>('2026-10-20');
+  const [masterSubjectId, setMasterSubjectId] = useState<string>('');
+
+  // Batch Session Modal state
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
+  const [batchSession, setBatchSession] = useState<number>(1);
+  const [batchSubjectId, setBatchSubjectId] = useState<string>('');
+  const [batchRoomSupervisors, setBatchRoomSupervisors] = useState<
+    Record<string, { sup1: string; sup2: string }>
+  >({});
 
   // Selection & Bulk delete state
   const [selectedScheduleIds, setSelectedScheduleIds] = useState<string[]>([]);
@@ -156,21 +173,24 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
   }, [students]);
 
   // Searchable Subject Options sorted by grade (10, 11, 12) then name
-  const subjectOptions: SearchableOption[] = useMemo(() => {
+  const sortedSubjects = useMemo(() => {
     return subjects
       .slice()
       .sort(
         (a, b) =>
           (Number(a.grade) || 0) - (Number(b.grade) || 0) ||
           a.name.localeCompare(b.name, 'id', { numeric: true })
-      )
-      .map((s) => ({
-        value: s.id,
-        label: s.name,
-        subLabel: `${s.code} • ${s.group} • ${s.durationMinutes}m`,
-        badge: s.grade ? `Kelas ${s.grade}` : 'Semua Tingkat'
-      }));
+      );
   }, [subjects]);
+
+  const subjectOptions: SearchableOption[] = useMemo(() => {
+    return sortedSubjects.map((s) => ({
+      value: s.id,
+      label: s.name,
+      subLabel: `${s.code} • ${s.group} • ${s.durationMinutes}m`,
+      badge: s.grade ? `Kelas ${s.grade}` : 'Semua Tingkat'
+    }));
+  }, [sortedSubjects]);
 
   // Searchable Supervisor Options sorted alphabetically A-Z
   const supervisorOptions: SearchableOption[] = useMemo(() => {
@@ -279,35 +299,202 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
     }
   };
 
-  const openAddModal = () => {
-    setEditingSchedule(null);
-    setFormDate(uniqueDates[0] || '2026-10-20');
-    setFormSession(1);
-    setFormStartTime('07:30');
-    setFormEndTime('08:30');
-    setFormRoomId(rooms[0]?.id || '');
-    setFormSupervisors([supervisors[0]?.id || '']);
-    setFormAllowCapacityOverride(false);
-    setFormNotes('');
-    setValidationErrors([]);
-    setValidationWarnings([]);
-    setFormGroups([
+  const getInitialGroupsForRoom = (roomId: string, defaultSubjectId?: string) => {
+    const roomStudents = StorageService.getStudentsForRoom(roomId);
+    const fallbackSubjectId = defaultSubjectId || subjects[0]?.id || '';
+
+    if (roomStudents.length > 0) {
+      // Group students by classId from the permanent mapping
+      const classMapGroup = new Map<string, string[]>();
+      roomStudents.forEach((stu) => {
+        const list = classMapGroup.get(stu.classId) || [];
+        list.push(stu.id);
+        classMapGroup.set(stu.classId, list);
+      });
+
+      return Array.from(classMapGroup.entries()).map(([classId, studentIds], idx) => ({
+        id: `grp-${Date.now()}-${idx}`,
+        classId: classId,
+        subjectId: fallbackSubjectId,
+        participantCount: studentIds.length,
+        selectedStudentIds: studentIds
+      }));
+    }
+
+    // Fallback if room mapping is not yet configured for this room
+    return [
       {
         id: `grp-1`,
         classId: classes[0]?.id || '',
-        subjectId: subjects[0]?.id || '',
+        subjectId: fallbackSubjectId,
         participantCount: 10,
         selectedStudentIds: []
       },
       {
         id: `grp-2`,
         classId: classes[1]?.id || classes[0]?.id || '',
-        subjectId: subjects[1]?.id || subjects[0]?.id || '',
+        subjectId: fallbackSubjectId,
         participantCount: 10,
         selectedStudentIds: []
       }
-    ]);
+    ];
+  };
+
+  const handleRoomChange = (newRoomId: string) => {
+    setFormRoomId(newRoomId);
+    const roomStudents = StorageService.getStudentsForRoom(newRoomId);
+    if (roomStudents.length > 0) {
+      const currentSubjectId = formGroups[0]?.subjectId || subjects[0]?.id || '';
+      const autoGroups = getInitialGroupsForRoom(newRoomId, currentSubjectId);
+      setFormGroups(autoGroups);
+    }
+  };
+
+  const applySubjectToAllGroups = (subjId: string) => {
+    if (!subjId) return;
+    setMasterSubjectId(subjId);
+    setFormGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        subjectId: subjId
+      }))
+    );
+  };
+
+  const openAddModal = (presetDate?: string, presetRoomId?: string, presetSession?: number) => {
+    setEditingSchedule(null);
+    const dateToUse = presetDate || (uniqueDates.includes(matrixDate) ? matrixDate : uniqueDates[0] || '2026-10-20');
+    const sessionToUse = presetSession || 1;
+    const roomToUse = presetRoomId || rooms[0]?.id || '';
+
+    setFormDate(dateToUse);
+    setFormSession(sessionToUse);
+    const times = getDefaultTimesForSession(sessionToUse);
+    setFormStartTime(times.startTime);
+    setFormEndTime(times.endTime);
+    setFormRoomId(roomToUse);
+    setFormSupervisors([supervisors[0]?.id || '']);
+    setFormAllowCapacityOverride(false);
+    setFormNotes('');
+    setValidationErrors([]);
+    setValidationWarnings([]);
+    setMasterSubjectId('');
+
+    // Automatically load groups from permanent room mapping for this room
+    const initialGroups = getInitialGroupsForRoom(roomToUse);
+    setFormGroups(initialGroups);
     setIsModalOpen(true);
+  };
+
+  const handleOpenBatchModal = (sess: number) => {
+    setBatchSession(sess);
+    setBatchSubjectId(subjects[0]?.id || '');
+    // Pre-populate supervisors from existing schedules if any
+    const existingForSession = schedules.filter(
+      (s) => s.date === matrixDate && s.session === sess
+    );
+    const existingMap: Record<string, { sup1: string; sup2: string }> = {};
+    rooms.forEach((r, idx) => {
+      const sch = existingForSession.find((s) => s.roomId === r.id);
+      if (sch && sch.supervisors.length > 0) {
+        existingMap[r.id] = {
+          sup1: sch.supervisors[0]?.supervisorId || '',
+          sup2: sch.supervisors[1]?.supervisorId || ''
+        };
+      } else {
+        const supIndex1 = (idx * 2) % (supervisors.length || 1);
+        const supIndex2 = (idx * 2 + 1) % (supervisors.length || 1);
+        existingMap[r.id] = {
+          sup1: supervisors[supIndex1]?.id || '',
+          sup2: supervisors[supIndex2]?.id || ''
+        };
+      }
+    });
+    setBatchRoomSupervisors(existingMap);
+    setBatchModalOpen(true);
+  };
+
+  const handleSaveBatchSession = () => {
+    if (!batchSubjectId) {
+      alert('Pilih Mata Pelajaran terlebih dahulu!');
+      return;
+    }
+
+    const times = getDefaultTimesForSession(batchSession);
+    const allSchedules = StorageService.getSchedules();
+    // Filter out existing schedules for this date and session across all rooms
+    const remainingSchedules = allSchedules.filter(
+      (s) => !(s.date === matrixDate && s.session === batchSession)
+    );
+
+    const newSchedules: ExamSchedule[] = [];
+
+    rooms.forEach((room) => {
+      const roomSup = batchRoomSupervisors[room.id] || {
+        sup1: supervisors[0]?.id || '',
+        sup2: ''
+      };
+
+      const scheduleId = `sch-${Date.now()}-${room.id}-${batchSession}`;
+      const supsToAssign: ScheduleSupervisorAssignment[] = [];
+      if (roomSup.sup1) {
+        supsToAssign.push({
+          id: `asup-${scheduleId}-1`,
+          scheduleId: scheduleId,
+          supervisorId: roomSup.sup1,
+          order: 1
+        });
+      }
+      if (roomSup.sup2 && roomSup.sup2 !== roomSup.sup1) {
+        supsToAssign.push({
+          id: `asup-${scheduleId}-2`,
+          scheduleId: scheduleId,
+          supervisorId: roomSup.sup2,
+          order: 2
+        });
+      }
+
+      // Groups for this room based on permanent room mapping
+      const baseGroups = getInitialGroupsForRoom(room.id, batchSubjectId);
+      const groups: ExamScheduleGroup[] = baseGroups.map((g, gIdx) => ({
+        id: g.id || `grp-${scheduleId}-${gIdx}`,
+        scheduleId: scheduleId,
+        classId: g.classId,
+        subjectId: batchSubjectId || g.subjectId,
+        participantCount: g.participantCount,
+        selectedStudentIds: g.selectedStudentIds || []
+      }));
+
+      const sch: ExamSchedule = {
+        id: scheduleId,
+        academicYear: settings.academicYear,
+        semester: settings.semester,
+        examType: settings.examName,
+        date: matrixDate,
+        session: batchSession,
+        startTime: times.startTime,
+        endTime: times.endTime,
+        roomId: room.id,
+        status: 'Terjadwal',
+        supervisors: supsToAssign,
+        groups: groups,
+        allowCapacityOverride: false,
+        notes: `Jadwal Matriks Otomatis Sesi ${batchSession}`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      newSchedules.push(sch);
+    });
+
+    const finalSchedules = [...remainingSchedules, ...newSchedules];
+    StorageService.saveSchedules(finalSchedules);
+    onRefresh();
+    setBatchModalOpen(false);
+    setSuccessMessage(
+      `Berhasil membuat/memperbarui jadwal untuk seluruh ${rooms.length} ruang pada Sesi ${batchSession}!`
+    );
+    setTimeout(() => setSuccessMessage(null), 4000);
   };
 
   const handleSessionChange = (sess: number) => {
@@ -478,6 +665,22 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
           {/* View Toggles */}
           <div className="bg-slate-100 p-0.5 rounded-lg flex items-center text-xs">
             <button
+              type="button"
+              onClick={() => setActiveViewMode('MATRIX')}
+              className={`px-3 py-1.5 rounded-md font-medium flex items-center gap-1.5 transition-all ${
+                activeViewMode === 'MATRIX'
+                  ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Matriks Ruang &amp; Sesi</span>
+              <span className="px-1.5 py-0.2 bg-indigo-100 text-indigo-700 text-[10px] rounded-full font-bold">
+                1x Mapping
+              </span>
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveViewMode('LIST')}
               className={`px-3 py-1.5 rounded-md font-medium transition-all ${
                 activeViewMode === 'LIST'
@@ -488,6 +691,7 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
               Semua Jadwal
             </button>
             <button
+              type="button"
               onClick={() => setActiveViewMode('BY_ROOM')}
               className={`px-3 py-1.5 rounded-md font-medium transition-all ${
                 activeViewMode === 'BY_ROOM'
@@ -498,6 +702,7 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
               Per Ruang
             </button>
             <button
+              type="button"
               onClick={() => setActiveViewMode('BY_DATE')}
               className={`px-3 py-1.5 rounded-md font-medium transition-all ${
                 activeViewMode === 'BY_DATE'
@@ -520,8 +725,20 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
             </button>
           )}
 
+          {onNavigateToRoomMapping && (
+            <button
+              type="button"
+              onClick={onNavigateToRoomMapping}
+              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              title="Atur Pembagian Siswa ke Ruang Ujian (1x Tetap Berlaku Semua Hari)"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Mapping Siswa Ruang</span>
+            </button>
+          )}
+
           <button
-            onClick={openAddModal}
+            onClick={() => openAddModal()}
             className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shadow-sm"
           >
             <Plus className="w-4 h-4" />
@@ -607,6 +824,332 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
               <span>Hapus Terpilih ({selectedScheduleIds.length})</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* VIEW 0: MATRIX VIEW - Ruang & Sesi (Mapping Siswa 1x Tetap Berlaku Semua Hari) */}
+      {activeViewMode === 'MATRIX' && (
+        <div className="space-y-5">
+          {/* Matrix Info & Date Selector */}
+          <div className="bg-white p-4 rounded-xl border border-indigo-200 shadow-xs space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 bg-indigo-100 text-indigo-800 text-xs font-bold rounded-md flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600" />
+                    Mapping Siswa 1x untuk Semua Hari
+                  </span>
+                  <span className="text-xs text-slate-500 font-medium">
+                    Penentuan Mata Pelajaran &amp; Pengawas per Ruang &amp; Sesi
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 mt-1">
+                  Siswa yang menempati setiap ruang diambil dari <strong>Mapping Siswa Ruang</strong> yang berlaku sepanjang periode ujian. Di sini Anda tinggal menentukan mapel apa yang diujikan dan siapa pengawas di setiap ruang untuk setiap sesi.
+                </p>
+              </div>
+
+              {onNavigateToRoomMapping && (
+                <button
+                  type="button"
+                  onClick={onNavigateToRoomMapping}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors shrink-0"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Ubah Mapping Siswa Ruang</span>
+                </button>
+              )}
+            </div>
+
+            {/* Date Selection Pills */}
+            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-slate-700">Pilih Tanggal Ujian:</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {uniqueDates.map((dt) => {
+                  const dObj = new Date(dt);
+                  const isSelected = matrixDate === dt;
+                  const countForDate = schedules.filter((s) => s.date === dt).length;
+                  return (
+                    <button
+                      key={dt}
+                      type="button"
+                      onClick={() => setMatrixDate(dt)}
+                      className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white shadow-xs font-semibold'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      <span>
+                        {dObj.toLocaleDateString('id-ID', {
+                          weekday: 'short',
+                          day: 'numeric',
+                          month: 'short'
+                        })}
+                      </span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                          isSelected ? 'bg-indigo-700 text-indigo-100' : 'bg-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {countForDate}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="ml-auto flex items-center gap-2 text-xs">
+                <span className="text-slate-500">Tanggal Lain:</span>
+                <input
+                  type="date"
+                  value={matrixDate}
+                  onChange={(e) => setMatrixDate(e.target.value)}
+                  className="px-2.5 py-1 text-xs border border-slate-300 rounded-md bg-white font-medium text-slate-700"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* SESSIONS BREAKDOWN */}
+          {[1, 2, 3].map((sessNum) => {
+            const sessTimes = getDefaultTimesForSession(sessNum);
+            const schedulesInSession = schedules.filter(
+              (s) => s.date === matrixDate && s.session === sessNum
+            );
+            const scheduledRoomIds = new Set(schedulesInSession.map((s) => s.roomId));
+            const progressCount = scheduledRoomIds.size;
+
+            return (
+              <div
+                key={sessNum}
+                className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden"
+              >
+                {/* Session Header */}
+                <div className="bg-slate-50/80 px-4 py-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 font-bold flex items-center justify-center text-sm">
+                      S{sessNum}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">
+                          {getSessionLabel(sessNum)}
+                        </h3>
+                        <span className="text-xs font-mono text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
+                          {sessTimes.startTime} - {sessTimes.endTime} WIB
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {progressCount} dari {rooms.length} ruang telah ditentukan Mapel &amp; Pengawas
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenBatchModal(sessNum)}
+                      className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      title="Tentukan Mapel & Pengawas sekaligus untuk semua ruang pada sesi ini"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Set Cepat Semua Ruang Sesi {sessNum}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Rooms Table for this Session */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-700">
+                    <thead className="bg-slate-100/75 text-slate-600 font-semibold border-b border-slate-200 uppercase text-[10px] tracking-wider">
+                      <tr>
+                        <th className="px-3 py-2.5">Ruang Ujian</th>
+                        <th className="px-3 py-2.5">Siswa &amp; Kelas (Mapping Tetap)</th>
+                        <th className="px-3 py-2.5">Mata Pelajaran Ujian</th>
+                        <th className="px-3 py-2.5">Pengawas Ruang</th>
+                        <th className="px-3 py-2.5 text-center w-36">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {rooms.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                            Belum ada ruang ujian yang terdaftar di Master Ruang.
+                          </td>
+                        </tr>
+                      ) : (
+                        rooms.map((room) => {
+                          const roomSchedule = schedulesInSession.find(
+                            (s) => s.roomId === room.id
+                          );
+                          const roomStudents = StorageService.getStudentsForRoom(room.id);
+                          const isMapped = roomStudents.length > 0;
+
+                          // Classes summary in this room
+                          const classesInRoomMap = new Map<string, number>();
+                          roomStudents.forEach((stu) => {
+                            const cName = classMap.get(stu.classId)?.name || stu.classId;
+                            classesInRoomMap.set(cName, (classesInRoomMap.get(cName) || 0) + 1);
+                          });
+                          const classSummaryStr = Array.from(classesInRoomMap.entries())
+                            .map(([cName, count]) => `${count} ${cName}`)
+                            .join(', ');
+
+                          return (
+                            <tr
+                              key={room.id}
+                              className={`hover:bg-slate-50/80 transition-colors ${
+                                roomSchedule ? 'bg-white' : 'bg-slate-50/30'
+                              }`}
+                            >
+                              {/* Ruang Ujian */}
+                              <td className="px-3 py-3 font-medium text-slate-900 align-middle">
+                                <div className="flex items-center gap-2">
+                                  <DoorOpen className="w-4 h-4 text-slate-400 shrink-0" />
+                                  <div>
+                                    <span className="font-bold text-slate-800">
+                                      {room.code} - {room.name}
+                                    </span>
+                                    <div className="text-[11px] text-slate-500">
+                                      Kapasitas: {room.capacity} Kursi ({room.building})
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Siswa & Kelas (Mapping Tetap) */}
+                              <td className="px-3 py-3 align-middle">
+                                {isMapped ? (
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-slate-800">
+                                        {roomStudents.length} Siswa
+                                      </span>
+                                      <span className="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 text-[10px] rounded font-bold">
+                                        Tetap 1x
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-500 truncate max-w-xs" title={classSummaryStr}>
+                                      {classSummaryStr || 'Siswa terpilih'}
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-amber-600 font-medium text-[11px]">
+                                      Belum dimapping
+                                    </span>
+                                    {onNavigateToRoomMapping && (
+                                      <button
+                                        type="button"
+                                        onClick={onNavigateToRoomMapping}
+                                        className="text-[11px] text-indigo-600 hover:underline font-semibold"
+                                      >
+                                        Mapping sekarang
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* Mata Pelajaran Ujian */}
+                              <td className="px-3 py-3 align-middle">
+                                {roomSchedule ? (
+                                  <div className="space-y-1">
+                                    {roomSchedule.groups.map((grp, gIdx) => {
+                                      const subj = subjectMap.get(grp.subjectId);
+                                      const cls = classMap.get(grp.classId);
+                                      return (
+                                        <div
+                                          key={gIdx}
+                                          className="flex items-center gap-1.5 text-xs"
+                                        >
+                                          <span className="font-semibold text-indigo-900 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                                            {subj ? `${subj.name} (${subj.code})` : 'Mapel belum dipilih'}
+                                          </span>
+                                          {roomSchedule.groups.length > 1 && (
+                                            <span className="text-[10px] text-slate-500 font-medium">
+                                              ({cls?.name || 'Kelas'}: {grp.participantCount} siswa)
+                                            </span>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-400 italic text-[11px]">
+                                    Belum dijadwalkan
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Pengawas Ruang */}
+                              <td className="px-3 py-3 align-middle">
+                                {roomSchedule && roomSchedule.supervisors.length > 0 ? (
+                                  <div className="space-y-1">
+                                    {roomSchedule.supervisors.map((supRef, supIdx) => {
+                                      const s = supervisorMap.get(supRef.supervisorId);
+                                      const roleText = supRef.order === 2 ? 'Pengawas 2' : 'Pengawas 1';
+                                      return (
+                                        <div key={supIdx} className="flex items-center gap-1.5">
+                                          <span className="text-slate-800 font-medium text-xs">
+                                            {s ? s.name : 'Pengawas'}
+                                          </span>
+                                          <span className="px-1.5 py-0.2 bg-slate-100 text-slate-600 text-[10px] rounded font-semibold border border-slate-200">
+                                            {roleText}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-400 italic text-[11px]">-</span>
+                                )}
+                              </td>
+
+                              {/* Aksi */}
+                              <td className="px-3 py-3 text-center align-middle">
+                                {roomSchedule ? (
+                                  <div className="flex items-center justify-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => openEditModal(roomSchedule)}
+                                      className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-medium flex items-center gap-1 transition-colors"
+                                      title="Edit Mapel & Pengawas"
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5 text-slate-600" />
+                                      <span>Edit</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDelete(roomSchedule.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                      title="Hapus jadwal sesi ini"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => openAddModal(matrixDate, room.id, sessNum)}
+                                    className="px-2.5 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded font-semibold flex items-center justify-center gap-1 shadow-xs transition-colors mx-auto"
+                                    title="Tentukan Mata Pelajaran dan Pengawas"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>Set Mapel</span>
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1047,7 +1590,7 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
                     </label>
                     <select
                       value={formRoomId}
-                      onChange={(e) => setFormRoomId(e.target.value)}
+                      onChange={(e) => handleRoomChange(e.target.value)}
                       className="w-full px-3 py-1.5 border border-slate-200 rounded-md bg-white font-semibold text-xs text-slate-800"
                     >
                       {sortedRooms.map((r) => (
@@ -1057,7 +1600,7 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
                       ))}
                     </select>
                     <p className="text-[11px] text-slate-500 mt-1">
-                      1. Jadwal diatur per ruangan. Siswa dari berbagai kelas dapat digabung ke ruangan ini.
+                      1. Jadwal diatur per ruangan. Siswa otomatis dimuat dari Mapping Siswa Ruang (1x Tetap).
                     </p>
                   </div>
 
@@ -1121,6 +1664,37 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
 
               {/* CORE REQUIREMENT: Multi-Class & Multi-Subject Matrix */}
               <div className="bg-white p-4 rounded-xl border border-blue-200 shadow-xs space-y-3">
+                {/* Global Room Mapping Status & 1-Click Subject Setter */}
+                <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-lg flex flex-wrap items-center justify-between gap-2.5">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900">
+                      <CheckCircle2 className="w-4 h-4 text-indigo-600" />
+                      <span>Mapping Siswa Ruang (1x Tetap Berlaku Semua Hari)</span>
+                    </div>
+                    <p className="text-[11px] text-indigo-700 mt-0.5">
+                      Ruangan ini memuat siswa dari mapping tetap. Anda cukup memilih <strong>Mata Pelajaran</strong> dan <strong>Pengawas</strong>.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold text-slate-700 whitespace-nowrap">
+                      Set Mata Pelajaran Semua:
+                    </span>
+                    <select
+                      value={masterSubjectId}
+                      onChange={(e) => applySubjectToAllGroups(e.target.value)}
+                      className="px-2.5 py-1 text-xs border border-indigo-300 rounded-md bg-white font-medium text-slate-800"
+                    >
+                      <option value="">-- Pilih Mapel --</option>
+                      {sortedSubjects.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="font-bold text-blue-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
@@ -1645,6 +2219,150 @@ export const SchedulesView: React.FC<SchedulesViewProps> = ({
             .reduce((sum, g) => sum + (Number(g.participantCount) || 0), 0)}
           onSave={handleSaveStudentSelection}
         />
+      )}
+
+      {/* Batch Session Schedule Modal */}
+      {batchModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 bg-indigo-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-indigo-200" />
+                <div>
+                  <h3 className="font-bold text-base">
+                    Set Cepat Mapel &amp; Pengawas Seluruh Ruang
+                  </h3>
+                  <p className="text-xs text-indigo-100">
+                    Sesi {batchSession} • Tanggal {matrixDate} • Mapping Siswa Tetap Otomatis
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBatchModalOpen(false)}
+                className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 text-xs">
+              <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-indigo-900">
+                <p className="font-semibold">
+                  ⚡ Pembagian Siswa ke Setiap Ruang Tetap Sesuai Mapping (1x untuk Semua Hari)
+                </p>
+                <p className="mt-1 text-slate-600">
+                  Fitur ini secara otomatis membuat atau memperbarui jadwal untuk seluruh {rooms.length} ruang pada Sesi {batchSession}. Anda tinggal menentukan Mata Pelajaran yang diujikan dan menugaskan Pengawas per ruangan.
+                </p>
+              </div>
+
+              {/* Master Subject Selection for all rooms */}
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-800">
+                  Mata Pelajaran Ujian Sesi Ini (Diterapkan ke Semua Ruang): <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={batchSubjectId}
+                  onChange={(e) => setBatchSubjectId(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white font-medium text-slate-800 text-xs"
+                >
+                  <option value="">-- Pilih Mata Pelajaran --</option>
+                  {sortedSubjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code}) - Kelas {s.grade}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Supervisor assignments per room */}
+              <div className="space-y-2 pt-2">
+                <label className="block font-semibold text-slate-800">
+                  Penugasan Pengawas per Ruang:
+                </label>
+                <div className="max-h-64 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+                  {rooms.map((room) => {
+                    const roomSups = batchRoomSupervisors[room.id] || { sup1: '', sup2: '' };
+                    const mappedStudents = StorageService.getStudentsForRoom(room.id);
+                    return (
+                      <div key={room.id} className="p-3 flex flex-col sm:row sm:items-center justify-between gap-3 bg-slate-50/40">
+                        <div className="min-w-[140px]">
+                          <span className="font-bold text-slate-800">{room.code} - {room.name}</span>
+                          <p className="text-[11px] text-slate-500">
+                            {mappedStudents.length} Siswa Terdaftar
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1">
+                          <div>
+                            <select
+                              value={roomSups.sup1}
+                              onChange={(e) =>
+                                setBatchRoomSupervisors((prev) => ({
+                                  ...prev,
+                                  [room.id]: { ...(prev[room.id] || { sup1: '', sup2: '' }), sup1: e.target.value }
+                                }))
+                              }
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-md bg-white text-xs font-medium"
+                            >
+                              <option value="">Pengawas 1 (Opsional)</option>
+                              {supervisors
+                                .filter((s) => s.isActive)
+                                .map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                          <div>
+                            <select
+                              value={roomSups.sup2}
+                              onChange={(e) =>
+                                setBatchRoomSupervisors((prev) => ({
+                                  ...prev,
+                                  [room.id]: { ...(prev[room.id] || { sup1: '', sup2: '' }), sup2: e.target.value }
+                                }))
+                              }
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded-md bg-white text-xs font-medium"
+                            >
+                              <option value="">Pengawas 2 (Opsional)</option>
+                              {supervisors
+                                .filter((s) => s.isActive && s.id !== roomSups.sup1)
+                                .map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setBatchModalOpen(false)}
+                className="px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveBatchSession}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs flex items-center gap-1.5 transition-colors"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Simpan Jadwal Seluruh Ruang</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Confirmation Modal */}

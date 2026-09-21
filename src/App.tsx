@@ -10,6 +10,7 @@ import {
   SupervisorsView,
   SettingsView,
   SchedulesView,
+  RoomMappingView,
   ExamMinutesView,
   AttendanceView,
   MakeUpExamsView,
@@ -239,6 +240,17 @@ export default function App() {
             />
           )}
 
+          {currentView === 'room-mapping' && (
+            <RoomMappingView
+              rooms={rooms}
+              students={students}
+              classes={classes}
+              settings={settings}
+              onRefresh={refreshAllData}
+              onNavigateToSchedules={() => setCurrentView('schedules')}
+            />
+          )}
+
           {currentView === 'schedules' && (
             <SchedulesView
               schedules={schedules}
@@ -249,6 +261,7 @@ export default function App() {
               students={students}
               settings={settings}
               onRefresh={refreshAllData}
+              onNavigateToRoomMapping={() => setCurrentView('room-mapping')}
             />
           )}
 
@@ -274,6 +287,7 @@ export default function App() {
               rooms={rooms}
               schedules={schedules}
               onRefresh={refreshAllData}
+              onNavigateToMapping={() => setCurrentView('room-mapping')}
             />
           )}
 

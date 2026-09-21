@@ -73,9 +73,16 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   const activeSchedule = scheduleMap.get(selectedScheduleId) || schedules[0];
   const activeRoom = activeSchedule ? roomMap.get(activeSchedule.roomId) : null;
 
-  // Students assigned to this schedule (respecting specific student selection per room if defined)
+  // Students assigned to this schedule (respecting permanent room mapping or specific group selection)
   const assignedStudents = useMemo(() => {
     if (!activeSchedule) return [];
+
+    // Prioritize permanent room mapping (valid across all exam days)
+    const roomStudents = StorageService.getStudentsForRoom(activeSchedule.roomId);
+    if (roomStudents.length > 0) {
+      return roomStudents;
+    }
+
     const studentMap = new Map(students.map((s) => [s.id, s]));
     const list: Student[] = [];
     const seenStudentIds = new Set<string>();

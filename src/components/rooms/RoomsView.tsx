@@ -14,7 +14,8 @@ import {
   Building,
   Monitor,
   Check,
-  X
+  X,
+  Users
 } from 'lucide-react';
 import { Room, RoomStatus, SchoolSetting, ExamSchedule } from '../../types';
 import { StorageService } from '../../lib/storage';
@@ -28,13 +29,15 @@ interface RoomsViewProps {
   schedules?: ExamSchedule[];
   settings?: SchoolSetting;
   onRefresh: () => void;
+  onNavigateToMapping?: () => void;
 }
 
 export const RoomsView: React.FC<RoomsViewProps> = ({
   rooms,
   schedules = [],
   settings: settingsProp,
-  onRefresh
+  onRefresh,
+  onNavigateToMapping
 }) => {
   const settings = settingsProp || StorageService.getSettings();
   const [searchTerm, setSearchTerm] = useState('');
@@ -440,6 +443,18 @@ export const RoomsView: React.FC<RoomsViewProps> = ({
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>Hapus Semua</span>
+                </button>
+              )}
+
+              {onNavigateToMapping && (
+                <button
+                  type="button"
+                  onClick={onNavigateToMapping}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-all"
+                  title="Mapping Siswa ke Ruang Ujian (1x Tetap Berlaku Semua Hari)"
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Mapping Siswa Ruang</span>
                 </button>
               )}
 

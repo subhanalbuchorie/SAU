@@ -30,6 +30,7 @@ export type NavItemKey =
   | 'supervisors'
   | 'subjects'
   | 'rooms'
+  | 'room-mapping'
   | 'schedules'
   | 'minutes'
   | 'attendance'
@@ -146,31 +147,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
       title: 'PELAKSANAAN UJIAN',
       items: [
         {
+          key: 'room-mapping' as NavItemKey,
+          label: '8. Mapping Siswa Ruang',
+          shortLabel: 'Mapping Ruang',
+          icon: Users,
+          highlight: true,
+          badge: '1x Tetap',
+          roles: ['ADMIN', 'PANITIA', 'OPERATOR']
+        },
+        {
           key: 'schedules' as NavItemKey,
-          label: '8. Pengaturan Jadwal',
+          label: '9. Pengaturan Jadwal',
           shortLabel: 'Jadwal',
           icon: CalendarDays,
-          highlight: true,
-          badge: 'Multi-Kelas',
+          badge: 'Ruang & Sesi',
           roles: ['ADMIN', 'PANITIA', 'OPERATOR', 'PENGAWAS']
         },
         {
           key: 'attendance' as NavItemKey,
-          label: '9. Daftar Hadir',
+          label: '10. Daftar Hadir',
           shortLabel: 'Presensi',
           icon: ClipboardList,
           roles: ['ADMIN', 'PANITIA', 'OPERATOR', 'PENGAWAS']
         },
         {
           key: 'minutes' as NavItemKey,
-          label: '10. Berita Acara',
+          label: '11. Berita Acara',
           shortLabel: 'Berita Acara',
           icon: FileCheck,
           roles: ['ADMIN', 'PANITIA', 'OPERATOR', 'PENGAWAS']
         },
         {
           key: 'makeup' as NavItemKey,
-          label: '11. Daftar Siswa Susulan',
+          label: '12. Daftar Siswa Susulan',
           shortLabel: 'Susulan',
           icon: RotateCcw,
           badge: 'Susulan',
@@ -183,14 +192,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         {
           key: 'reports' as NavItemKey,
-          label: '12. Laporan & Cetak',
+          label: '13. Laporan & Cetak',
           shortLabel: 'Laporan',
           icon: FileBarChart2,
           roles: ['ADMIN', 'PANITIA', 'OPERATOR']
         },
         {
           key: 'audit' as NavItemKey,
-          label: '13. Audit Log & Backup',
+          label: '14. Audit Log & Backup',
           shortLabel: 'Audit Log',
           icon: History,
           roles: ['ADMIN', 'PANITIA']

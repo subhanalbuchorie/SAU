@@ -12,7 +12,8 @@ import {
   AuditLog,
   ConflictValidationResult,
   Role,
-  MakeUpExamRecord
+  MakeUpExamRecord,
+  RoomStudentMapping
 } from '../types';
 import {
   initialSchoolSetting,
@@ -51,7 +52,8 @@ const STORAGE_KEYS = {
   MAKEUP_EXAMS: 'aus_makeup_exams_v1',
   USERS: 'aus_users_v1',
   AUDIT_LOGS: 'aus_audit_logs_v1',
-  CURRENT_USER: 'aus_current_user_v1'
+  CURRENT_USER: 'aus_current_user_v1',
+  ROOM_MAPPINGS: 'aus_room_mappings_v1'
 };
 
 let isRealTimeSyncInitialized = false;
@@ -365,6 +367,7 @@ export const StorageService = {
     setStorageItem(STORAGE_KEYS.MINUTES, []);
     setStorageItem(STORAGE_KEYS.ATTENDANCES, []);
     setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, []);
+    setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, {});
 
     if (options.includeLogs) {
       setStorageItem(STORAGE_KEYS.AUDIT_LOGS, initialAuditLogs);
@@ -500,6 +503,595 @@ export const StorageService = {
     const allRooms = StorageService.getRooms();
     const ids = allRooms.map((r) => r.id);
     return StorageService.deleteMultipleRooms(ids, force);
+  },
+
+  // Room-Student Permanent Mapping (Done once, valid for all exam days)
+  getRoomStudentMappings: (): Record<string, string[]> => {
+    return getStorageItem<Record<string, string[]>>(STORAGE_KEYS.ROOM_MAPPINGS, {});
+  },
+
+  getStudentsForRoom: (roomId: string): Student[] => {
+    const rooms = StorageService.getRooms();
+    const room = rooms.find((r) => r.id === roomId);
+    const students = StorageService.getStudents();
+    const studentMap = new Map(students.map((s) => [s.id, s]));
+
+    if (room?.assignedStudentIds && room.assignedStudentIds.length > 0) {
+      return room.assignedStudentIds
+        .map((sid) => studentMap.get(sid))
+        .filter((s): s is Student => Boolean(s));
+    }
+
+    // Fallback: lookup by student.roomId
+    const mapped = students.filter((s) => s.roomId === roomId && s.status === 'AKTIF');
+    if (mapped.length > 0) {
+      return mapped.sort((a, b) => (a.seatNumber || 0) - (b.seatNumber || 0));
+    }
+
+    // Secondary fallback: check STORAGE_KEYS.ROOM_MAPPINGS
+    const allMappings = StorageService.getRoomStudentMappings();
+    const ids = allMappings[roomId];
+    if (ids && ids.length > 0) {
+      return ids.map((sid) => studentMap.get(sid)).filter((s): s is Student => Boolean(s));
+    }
+
+    return [];
+  },
+
+  saveRoomStudentMapping: (
+    roomId: string,
+    studentIds: string[]
+  ): { success: boolean; message: string; movedCount: number } => {
+    const rooms = StorageService.getRooms();
+    const roomIdx = rooms.findIndex((r) => r.id === roomId);
+    if (roomIdx < 0) {
+      return { success: false, message: 'Ruang tidak ditemukan.', movedCount: 0 };
+    }
+
+    const studentIdSet = new Set(studentIds);
+    let movedFromOtherRoomsCount = 0;
+
+    // 1. Process all rooms: remove assigned students from other rooms
+    const allMappings = StorageService.getRoomStudentMappings();
+    const updatedRooms = rooms.map((r, idx) => {
+      if (idx === roomIdx) {
+        return {
+          ...r,
+          assignedStudentIds: studentIds,
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      // Check if this other room has any of the students now being assigned to target room
+      const existing = r.assignedStudentIds || [];
+      const hasConflict = existing.some((id) => studentIdSet.has(id));
+      if (hasConflict) {
+        const cleaned = existing.filter((id) => {
+          const isConflict = studentIdSet.has(id);
+          if (isConflict) movedFromOtherRoomsCount++;
+          return !isConflict;
+        });
+        allMappings[r.id] = cleaned;
+        return {
+          ...r,
+          assignedStudentIds: cleaned,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return r;
+    });
+
+    allMappings[roomId] = studentIds;
+
+    // 2. Process all students: update roomId and continuous seatNumber (1..N)
+    const roomToStudentsMap = new Map<string, string[]>();
+    updatedRooms.forEach((r) => {
+      roomToStudentsMap.set(r.id, r.assignedStudentIds || []);
+    });
+
+    const students = StorageService.getStudents();
+    const updatedStudents = students.map((stu) => {
+      // If student is assigned to this target room
+      if (studentIdSet.has(stu.id)) {
+        const seatIdx = studentIds.indexOf(stu.id);
+        return {
+          ...stu,
+          roomId: roomId,
+          seatNumber: seatIdx + 1,
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      // If student was previously assigned to this target room, but is now removed
+      if (stu.roomId === roomId && !studentIdSet.has(stu.id)) {
+        return {
+          ...stu,
+          roomId: undefined,
+          seatNumber: undefined,
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      // If student is assigned to some other room, recompute seatNumber based on that other room's cleaned list
+      if (stu.roomId && stu.roomId !== roomId) {
+        const otherList = roomToStudentsMap.get(stu.roomId);
+        if (otherList) {
+          const seatIdx = otherList.indexOf(stu.id);
+          if (seatIdx >= 0) {
+            return {
+              ...stu,
+              seatNumber: seatIdx + 1,
+              updatedAt: new Date().toISOString()
+            };
+          } else {
+            return {
+              ...stu,
+              roomId: undefined,
+              seatNumber: undefined,
+              updatedAt: new Date().toISOString()
+            };
+          }
+        }
+      }
+
+      return stu;
+    });
+
+    // 3. Persist
+    setStorageItem(STORAGE_KEYS.ROOMS, updatedRooms);
+    setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+    setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+
+    batchSaveDocuments('rooms', updatedRooms);
+    batchSaveDocuments('students', updatedStudents);
+
+    const targetRoom = updatedRooms[roomIdx];
+    StorageService.addAuditLog(
+      'Mapping Siswa Ruang',
+      'Room',
+      roomId,
+      `Memetakan ${studentIds.length} siswa ke ruang ${targetRoom.code} (${targetRoom.name}) bebas bentrok (berlaku untuk semua hari ujian).`
+    );
+
+    const movedMsg =
+      movedFromOtherRoomsCount > 0
+        ? ` (${movedFromOtherRoomsCount} siswa otomatis dipindahkan dari ruang lain agar tidak bentrok)`
+        : '';
+
+    return {
+      success: true,
+      message: `Berhasil memetakan ${studentIds.length} siswa ke ruang ${targetRoom.name} untuk seluruh hari ujian${movedMsg}.`,
+      movedCount: movedFromOtherRoomsCount
+    };
+  },
+
+  moveStudentRoom: (
+    studentId: string,
+    targetRoomId: string | null
+  ): { success: boolean; message: string } => {
+    const students = StorageService.getStudents();
+    const student = students.find((s) => s.id === studentId);
+    if (!student) {
+      return { success: false, message: 'Data siswa tidak ditemukan.' };
+    }
+
+    const rooms = StorageService.getRooms();
+    const allMappings = StorageService.getRoomStudentMappings();
+
+    if (targetRoomId === null) {
+      // Unassign student from any room
+      const oldRoomId = student.roomId;
+      const updatedRooms = rooms.map((r) => {
+        if (r.assignedStudentIds && r.assignedStudentIds.includes(studentId)) {
+          const filtered = r.assignedStudentIds.filter((id) => id !== studentId);
+          allMappings[r.id] = filtered;
+          return { ...r, assignedStudentIds: filtered, updatedAt: new Date().toISOString() };
+        }
+        return r;
+      });
+
+      const updatedStudents = students.map((s) => {
+        if (s.id === studentId) {
+          return { ...s, roomId: undefined, seatNumber: undefined, updatedAt: new Date().toISOString() };
+        }
+        if (s.roomId === oldRoomId && oldRoomId) {
+          const room = updatedRooms.find((r) => r.id === oldRoomId);
+          const sIdx = (room?.assignedStudentIds || []).indexOf(s.id);
+          return { ...s, seatNumber: sIdx >= 0 ? sIdx + 1 : undefined };
+        }
+        return s;
+      });
+
+      setStorageItem(STORAGE_KEYS.ROOMS, updatedRooms);
+      setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+      setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+      batchSaveDocuments('rooms', updatedRooms);
+      batchSaveDocuments('students', updatedStudents);
+
+      StorageService.addAuditLog('Pindah Siswa Ruang', 'Student', studentId, `Mengeluarkan ${student.name} dari ruang ujian.`);
+      return { success: true, message: `Siswa ${student.name} berhasil dikeluarkan dari ruang ujian.` };
+    }
+
+    const targetRoom = rooms.find((r) => r.id === targetRoomId);
+    if (!targetRoom) {
+      return { success: false, message: 'Ruang tujuan tidak ditemukan.' };
+    }
+
+    const oldRoomId = student.roomId;
+    if (oldRoomId === targetRoomId) {
+      return { success: true, message: `Siswa ${student.name} sudah berada di ruang ${targetRoom.name}.` };
+    }
+
+    // Clean from all other rooms and add to target room
+    const updatedRooms = rooms.map((r) => {
+      if (r.id === targetRoomId) {
+        const existing = (r.assignedStudentIds || []).filter((id) => id !== studentId);
+        existing.push(studentId);
+        allMappings[r.id] = existing;
+        return { ...r, assignedStudentIds: existing, updatedAt: new Date().toISOString() };
+      } else if (r.assignedStudentIds && r.assignedStudentIds.includes(studentId)) {
+        const filtered = r.assignedStudentIds.filter((id) => id !== studentId);
+        allMappings[r.id] = filtered;
+        return { ...r, assignedStudentIds: filtered, updatedAt: new Date().toISOString() };
+      }
+      return r;
+    });
+
+    const updatedStudents = students.map((s) => {
+      if (s.id === studentId) {
+        const seatNum = (updatedRooms.find((r) => r.id === targetRoomId)?.assignedStudentIds || []).length;
+        return { ...s, roomId: targetRoomId, seatNumber: seatNum, updatedAt: new Date().toISOString() };
+      }
+      if (s.roomId === oldRoomId && oldRoomId) {
+        const room = updatedRooms.find((r) => r.id === oldRoomId);
+        const sIdx = (room?.assignedStudentIds || []).indexOf(s.id);
+        return { ...s, seatNumber: sIdx >= 0 ? sIdx + 1 : undefined };
+      }
+      return s;
+    });
+
+    setStorageItem(STORAGE_KEYS.ROOMS, updatedRooms);
+    setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+    setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+    batchSaveDocuments('rooms', updatedRooms);
+    batchSaveDocuments('students', updatedStudents);
+
+    StorageService.addAuditLog('Pindah Siswa Ruang', 'Student', studentId, `Memindahkan ${student.name} ke ${targetRoom.name}.`);
+    const newSeat = (updatedRooms.find((r) => r.id === targetRoomId)?.assignedStudentIds || []).length;
+    return { success: true, message: `Siswa ${student.name} berhasil dipindahkan ke ${targetRoom.name} (Meja ${newSeat}).` };
+  },
+
+  validateAndCleanRoomMappings: (): {
+    hasCollisions: boolean;
+    fixedCount: number;
+    collisions: { studentId: string; studentName: string; rooms: string[] }[];
+  } => {
+    const rooms = StorageService.getRooms();
+    const students = StorageService.getStudents();
+    const studentMap = new Map(students.map((s) => [s.id, s]));
+    const roomMap = new Map(rooms.map((r) => [r.id, r]));
+
+    // Check which rooms claim each student
+    const studentClaimMap = new Map<string, string[]>(); // studentId -> roomId[]
+    rooms.forEach((r) => {
+      const ids = r.assignedStudentIds || [];
+      ids.forEach((sid) => {
+        const list = studentClaimMap.get(sid) || [];
+        list.push(r.id);
+        studentClaimMap.set(sid, list);
+      });
+    });
+
+    const collisionList: { studentId: string; studentName: string; rooms: string[] }[] = [];
+    studentClaimMap.forEach((roomIds, sid) => {
+      if (roomIds.length > 1) {
+        const s = studentMap.get(sid);
+        collisionList.push({
+          studentId: sid,
+          studentName: s?.name || sid,
+          rooms: roomIds.map((rid) => roomMap.get(rid)?.code || rid)
+        });
+      }
+    });
+
+    let fixedCount = 0;
+    if (collisionList.length > 0) {
+      // Auto resolve collisions: Keep each student in at most 1 room
+      const assignedIdsByRoom = new Map<string, string[]>();
+      rooms.forEach((r) => assignedIdsByRoom.set(r.id, [...(r.assignedStudentIds || [])]));
+
+      const seenStudents = new Set<string>();
+
+      // First pass: students whose student.roomId matches
+      rooms.forEach((r) => {
+        const cleaned: string[] = [];
+        const original = assignedIdsByRoom.get(r.id) || [];
+        original.forEach((sid) => {
+          const s = studentMap.get(sid);
+          if (s && s.roomId === r.id && !seenStudents.has(sid)) {
+            cleaned.push(sid);
+            seenStudents.add(sid);
+          }
+        });
+        assignedIdsByRoom.set(r.id, cleaned);
+      });
+
+      // Second pass: any remaining assigned students
+      rooms.forEach((r) => {
+        const current = assignedIdsByRoom.get(r.id) || [];
+        const original = r.assignedStudentIds || [];
+        original.forEach((sid) => {
+          if (!seenStudents.has(sid)) {
+            current.push(sid);
+            seenStudents.add(sid);
+          }
+        });
+        assignedIdsByRoom.set(r.id, current);
+      });
+
+      // Update rooms and students
+      const allMappings: Record<string, string[]> = {};
+      const updatedRooms = rooms.map((r) => {
+        const finalIds = assignedIdsByRoom.get(r.id) || [];
+        allMappings[r.id] = finalIds;
+        return { ...r, assignedStudentIds: finalIds, updatedAt: new Date().toISOString() };
+      });
+
+      const updatedStudents = students.map((s) => {
+        const inRoom = updatedRooms.find((r) => (r.assignedStudentIds || []).includes(s.id));
+        if (inRoom) {
+          const seatNum = (inRoom.assignedStudentIds || []).indexOf(s.id) + 1;
+          return { ...s, roomId: inRoom.id, seatNumber: seatNum, updatedAt: new Date().toISOString() };
+        } else if (s.roomId) {
+          return { ...s, roomId: undefined, seatNumber: undefined, updatedAt: new Date().toISOString() };
+        }
+        return s;
+      });
+
+      fixedCount = collisionList.length;
+      setStorageItem(STORAGE_KEYS.ROOMS, updatedRooms);
+      setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+      setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+      batchSaveDocuments('rooms', updatedRooms);
+      batchSaveDocuments('students', updatedStudents);
+
+      StorageService.addAuditLog('Pembersihan Bentrok Ruang', 'RoomMapping', undefined, `Memperbaiki ${fixedCount} data siswa yang terpetakan ganda di lebih dari satu ruang.`);
+    }
+
+    return {
+      hasCollisions: collisionList.length > 0,
+      fixedCount,
+      collisions: collisionList
+    };
+  },
+
+  setupAllRoomsMapping: (options: {
+    mode: 'ROMBEL' | 'CROSS_CLASS' | 'ALPHABETICAL';
+    roomIds?: string[];
+    classIds?: string[];
+  }): {
+    success: boolean;
+    message: string;
+    mappedCount: number;
+    roomCount: number;
+    unmappedCount: number;
+  } => {
+    const allRooms = StorageService.getRooms()
+      .filter((r) => r.status === 'Aktif')
+      .sort((a, b) => a.code.localeCompare(b.code, 'id', { numeric: true }));
+
+    const targetRooms = options.roomIds && options.roomIds.length > 0
+      ? allRooms.filter((r) => options.roomIds!.includes(r.id))
+      : allRooms;
+
+    if (targetRooms.length === 0) {
+      return { success: false, message: 'Tidak ada ruang ujian aktif yang dipilih.', mappedCount: 0, roomCount: 0, unmappedCount: 0 };
+    }
+
+    const classes = StorageService.getClasses();
+    const classMap = new Map(classes.map((c) => [c.id, c]));
+
+    let eligibleStudents = StorageService.getStudents().filter((s) => s.status === 'AKTIF');
+    if (options.classIds && options.classIds.length > 0) {
+      const clsSet = new Set(options.classIds);
+      eligibleStudents = eligibleStudents.filter((s) => clsSet.has(s.classId));
+    }
+
+    if (eligibleStudents.length === 0) {
+      return { success: false, message: 'Tidak ada siswa aktif yang memenuhi kriteria.', mappedCount: 0, roomCount: 0, unmappedCount: 0 };
+    }
+
+    // Sort students based on chosen mode
+    let orderedStudents: Student[] = [];
+
+    if (options.mode === 'ROMBEL') {
+      // Sort by Grade -> Class Name -> Exam Number / Name
+      orderedStudents = eligibleStudents.slice().sort((a, b) => {
+        const clsA = classMap.get(a.classId);
+        const clsB = classMap.get(b.classId);
+        const gradeDiff = (Number(clsA?.grade) || 0) - (Number(clsB?.grade) || 0);
+        if (gradeDiff !== 0) return gradeDiff;
+        const clsNameDiff = (clsA?.name || '').localeCompare(clsB?.name || '', 'id', { numeric: true });
+        if (clsNameDiff !== 0) return clsNameDiff;
+        if (a.examNumber && b.examNumber) {
+          return a.examNumber.localeCompare(b.examNumber, 'id', { numeric: true });
+        }
+        return a.name.localeCompare(b.name, 'id');
+      });
+    } else if (options.mode === 'CROSS_CLASS') {
+      // Group by class first
+      const byClass = new Map<string, Student[]>();
+      eligibleStudents.forEach((s) => {
+        const list = byClass.get(s.classId) || [];
+        list.push(s);
+        byClass.set(s.classId, list);
+      });
+      byClass.forEach((list) => {
+        list.sort((a, b) => (a.examNumber && b.examNumber ? a.examNumber.localeCompare(b.examNumber, 'id', { numeric: true }) : a.name.localeCompare(b.name, 'id')));
+      });
+      const classQueues = Array.from(byClass.values());
+      let hasMore = true;
+      let ptr = 0;
+      while (hasMore) {
+        hasMore = false;
+        for (let i = 0; i < classQueues.length; i++) {
+          if (ptr < classQueues[i].length) {
+            orderedStudents.push(classQueues[i][ptr]);
+            hasMore = true;
+          }
+        }
+        ptr++;
+      }
+    } else {
+      // ALPHABETICAL
+      orderedStudents = eligibleStudents.slice().sort((a, b) => {
+        if (a.examNumber && b.examNumber) {
+          return a.examNumber.localeCompare(b.examNumber, 'id', { numeric: true });
+        }
+        return a.name.localeCompare(b.name, 'id');
+      });
+    }
+
+    // Clean distribution: 1 student = 1 room, 0 collisions
+    let studentPointer = 0;
+    const allRoomsUpdated = StorageService.getRooms();
+    const allMappings = StorageService.getRoomStudentMappings();
+    const allStudentsList = StorageService.getStudents();
+    const studentMap = new Map(allStudentsList.map((s) => [s.id, s]));
+
+    // Reset target rooms mappings first
+    targetRooms.forEach((tr) => {
+      const rIdx = allRoomsUpdated.findIndex((r) => r.id === tr.id);
+      if (rIdx >= 0) {
+        allRoomsUpdated[rIdx].assignedStudentIds = [];
+      }
+      allMappings[tr.id] = [];
+    });
+
+    let totalMapped = 0;
+    const targetRoomIdSet = new Set(targetRooms.map((r) => r.id));
+
+    targetRooms.forEach((room) => {
+      const capacity = Math.max(1, room.capacity || 30);
+      const roomStudentIds: string[] = [];
+
+      for (let i = 0; i < capacity && studentPointer < orderedStudents.length; i++) {
+        const stu = orderedStudents[studentPointer];
+        roomStudentIds.push(stu.id);
+        const originalStu = studentMap.get(stu.id);
+        if (originalStu) {
+          originalStu.roomId = room.id;
+          originalStu.seatNumber = i + 1;
+          originalStu.updatedAt = new Date().toISOString();
+        }
+        studentPointer++;
+        totalMapped++;
+      }
+
+      const rIdx = allRoomsUpdated.findIndex((r) => r.id === room.id);
+      if (rIdx >= 0) {
+        allRoomsUpdated[rIdx].assignedStudentIds = roomStudentIds;
+        allRoomsUpdated[rIdx].updatedAt = new Date().toISOString();
+      }
+      allMappings[room.id] = roomStudentIds;
+    });
+
+    // Unlink any student previously in target rooms but now not mapped
+    const assignedIdsSet = new Set<string>();
+    targetRooms.forEach((r) => {
+      (allMappings[r.id] || []).forEach((id) => assignedIdsSet.add(id));
+    });
+
+    allStudentsList.forEach((s) => {
+      if (s.roomId && targetRoomIdSet.has(s.roomId) && !assignedIdsSet.has(s.id)) {
+        s.roomId = undefined;
+        s.seatNumber = undefined;
+        s.updatedAt = new Date().toISOString();
+      }
+    });
+
+    const finalStudents = Array.from(studentMap.values());
+    setStorageItem(STORAGE_KEYS.ROOMS, allRoomsUpdated);
+    setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+    setStorageItem(STORAGE_KEYS.STUDENTS, finalStudents);
+
+    batchSaveDocuments('rooms', allRoomsUpdated);
+    batchSaveDocuments('students', finalStudents);
+
+    const unmappedCount = Math.max(0, eligibleStudents.length - totalMapped);
+
+    StorageService.addAuditLog(
+      'Setup Mapping Seluruh Ruang',
+      'RoomMapping',
+      undefined,
+      `Memetakan ${totalMapped} siswa ke ${targetRooms.length} ruang ujian (Metode: ${options.mode}) bebas bentrok 100%.`
+    );
+
+    return {
+      success: true,
+      message: `Berhasil memetakan ${totalMapped} siswa ke dalam ${targetRooms.length} ruang ujian secara tertib dan bebas bentrok! (Sisa belum terpetakan: ${unmappedCount} siswa)`,
+      mappedCount: totalMapped,
+      roomCount: targetRooms.length,
+      unmappedCount
+    };
+  },
+
+  autoGenerateRoomStudentMappings: (): { success: boolean; message: string; mappedCount: number; roomCount: number } => {
+    const res = StorageService.setupAllRoomsMapping({ mode: 'ROMBEL' });
+    return {
+      success: res.success,
+      message: res.message,
+      mappedCount: res.mappedCount,
+      roomCount: res.roomCount
+    };
+  },
+
+  clearRoomStudentMappings: (roomId?: string): { success: boolean; message: string } => {
+    const allRooms = StorageService.getRooms();
+    const allMappings = StorageService.getRoomStudentMappings();
+    const students = StorageService.getStudents();
+
+    if (roomId) {
+      const rIdx = allRooms.findIndex((r) => r.id === roomId);
+      if (rIdx >= 0) {
+        allRooms[rIdx].assignedStudentIds = [];
+        allRooms[rIdx].updatedAt = new Date().toISOString();
+        saveDocument('rooms', roomId, allRooms[rIdx]);
+      }
+      delete allMappings[roomId];
+      const updatedStudents = students.map((s) =>
+        s.roomId === roomId ? { ...s, roomId: undefined, seatNumber: undefined, updatedAt: new Date().toISOString() } : s
+      );
+      setStorageItem(STORAGE_KEYS.ROOMS, allRooms);
+      setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, allMappings);
+      setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+      const modified = updatedStudents.filter((s) => s.roomId === undefined);
+      if (modified.length > 0) batchSaveDocuments('students', modified);
+
+      StorageService.addAuditLog('Hapus Mapping Ruang', 'Room', roomId, `Mengosongkan mapping siswa pada ruang ID: ${roomId}`);
+      return { success: true, message: 'Mapping siswa pada ruangan ini berhasil dikosongkan.' };
+    } else {
+      allRooms.forEach((r) => {
+        r.assignedStudentIds = [];
+        r.updatedAt = new Date().toISOString();
+      });
+      const updatedStudents = students.map((s) => ({
+        ...s,
+        roomId: undefined,
+        seatNumber: undefined,
+        updatedAt: new Date().toISOString()
+      }));
+
+      setStorageItem(STORAGE_KEYS.ROOMS, allRooms);
+      setStorageItem(STORAGE_KEYS.ROOM_MAPPINGS, {});
+      setStorageItem(STORAGE_KEYS.STUDENTS, updatedStudents);
+
+      batchSaveDocuments('rooms', allRooms);
+      batchSaveDocuments('students', updatedStudents);
+
+      StorageService.addAuditLog('Reset Seluruh Mapping Ruang', 'RoomMapping', undefined, 'Mengosongkan seluruh pemetaan siswa ruang ujian.');
+      return { success: true, message: 'Seluruh mapping siswa ruang ujian berhasil dikosongkan.' };
+    }
   },
 
   // Classes
@@ -906,6 +1498,27 @@ export const StorageService = {
     }
     setStorageItem(STORAGE_KEYS.SCHEDULES, schedules);
     saveDocument('schedules', saved.id, saved);
+  },
+  saveMultipleSchedules: (newSchedules: ExamSchedule[]) => {
+    const schedules = StorageService.getSchedules();
+    const map = new Map<string, ExamSchedule>();
+    schedules.forEach((s) => map.set(s.id, s));
+    newSchedules.forEach((s) => {
+      map.set(s.id, {
+        ...s,
+        createdAt: s.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    });
+    const merged = Array.from(map.values());
+    setStorageItem(STORAGE_KEYS.SCHEDULES, merged);
+    batchSaveDocuments('schedules', newSchedules);
+    StorageService.addAuditLog('Simpan Banyak Jadwal', 'ExamSchedule', undefined, `Membuat / memperbarui ${newSchedules.length} jadwal ujian.`);
+  },
+  saveSchedules: (allSchedules: ExamSchedule[]) => {
+    setStorageItem(STORAGE_KEYS.SCHEDULES, allSchedules);
+    batchSaveDocuments('schedules', allSchedules);
+    StorageService.addAuditLog('Simpan Jadwal', 'ExamSchedule', undefined, `Menyimpan ${allSchedules.length} jadwal ujian.`);
   },
   deleteSchedule: (scheduleId: string) => {
     const filtered = StorageService.getSchedules().filter((s) => s.id !== scheduleId);

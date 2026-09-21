@@ -71,7 +71,15 @@ export interface Room {
   personInCharge?: string;
   status: RoomStatus;
   description?: string;
+  assignedStudentIds?: string[]; // IDs of students permanently mapped to this room for all exam days
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoomStudentMapping {
+  id: string; // roomId
+  roomId: string;
+  studentIds: string[]; // List of student IDs mapped to this room
   updatedAt: string;
 }
 
@@ -126,6 +134,8 @@ export interface Student {
   className?: string;
   major: string;
   examNumber?: string;
+  roomId?: string; // Permanent room assignment for all exam days
+  seatNumber?: number; // Seat/desk number in assigned room (1..N)
   status: StudentStatus;
   notes?: string;
   createdAt: string;
