@@ -55,6 +55,7 @@ export interface SchoolSetting {
   examStartDate: string;
   examEndDate: string;
   examNumberFormat: string; // e.g. "{seq:3}/{kelas}/{ujian}/{tahun}"
+  adminPassword?: string;
   updatedAt: string;
 }
 

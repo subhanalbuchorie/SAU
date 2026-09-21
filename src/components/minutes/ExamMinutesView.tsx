@@ -30,6 +30,7 @@ import {
 } from '../../types';
 import { StorageService } from '../../lib/storage';
 import { PrintHeader } from '../common/PrintHeader';
+import { ExamScheduleSelector } from '../common/ExamScheduleSelector';
 import { getSessionLabel, triggerA4Print } from '../../lib/sessionHelper';
 
 interface ExamMinutesViewProps {
@@ -135,7 +136,14 @@ export const ExamMinutesView: React.FC<ExamMinutesViewProps> = ({
       }
     });
 
-    return Array.from(map.values());
+    // Urutkan semua Daftar Nama Siswa berdasarkan Abjad Nama Lengkap dan Kelas
+    return Array.from(map.values()).sort((a, b) => {
+      const nameComp = (a.student.name || '').localeCompare(b.student.name || '', 'id', { sensitivity: 'base' });
+      if (nameComp !== 0) return nameComp;
+      const clsA = a.classItem?.name || a.student.classId || '';
+      const clsB = b.classItem?.name || b.student.classId || '';
+      return clsA.localeCompare(clsB, 'id', { numeric: true });
+    });
   }, [activeSchedule, allStudents, classMap, subjectMap, studentMap]);
 
   // AUTOMATIC RECAP FROM DAFTAR HADIR (ATTENDANCE)
@@ -589,40 +597,33 @@ export const ExamMinutesView: React.FC<ExamMinutesViewProps> = ({
             </div>
           )}
 
-          {/* Schedule Picker Bar */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
-                Pilih Sesi Jadwal:
-              </label>
-              <select
-                value={selectedScheduleId}
-                onChange={(e) => setSelectedScheduleId(e.target.value)}
-                className="w-full sm:w-auto px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-blue-500"
-              >
-                {schedules.map((s) => {
-                  const r = roomMap.get(s.roomId);
-                  return (
-                    <option key={s.id} value={s.id}>
-                      {s.date} | {getSessionLabel(s.session)} ({s.startTime}-{s.endTime}) | Ruang:{' '}
-                      {r ? r.code : s.roomId}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
+          {/* 3-Step Schedule Picker: 1. Tanggal, 2. Ruang, 3. Sesi */}
+          <div className="space-y-2">
+            <ExamScheduleSelector
+              schedules={schedules}
+              rooms={rooms}
+              subjects={subjects}
+              selectedScheduleId={selectedScheduleId}
+              onSelectScheduleId={setSelectedScheduleId}
+            />
 
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-slate-500">Status Verifikasi:</span>
-              <span
-                className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                  isVerified
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                    : 'bg-amber-50 text-amber-700 border border-amber-200'
-                }`}
-              >
-                {isVerified ? 'Terverifikasi Pengawas' : 'Draft / Belum Diverifikasi'}
-              </span>
+            <div className="flex items-center justify-between px-3 py-2 bg-white rounded-lg border border-slate-200 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-700">Ruang Terpilih:</span>
+                <span className="font-bold text-slate-900">{activeRoom?.code} ({activeRoom?.name})</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500">Status Verifikasi:</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                    isVerified
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-amber-50 text-amber-700 border border-amber-200'
+                  }`}
+                >
+                  {isVerified ? 'Terverifikasi Pengawas' : 'Draft / Belum Diverifikasi'}
+                </span>
+              </div>
             </div>
           </div>
 

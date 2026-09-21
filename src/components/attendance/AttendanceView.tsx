@@ -25,6 +25,7 @@ import {
 } from '../../types';
 import { StorageService } from '../../lib/storage';
 import { PrintHeader } from '../common/PrintHeader';
+import { ExamScheduleSelector } from '../common/ExamScheduleSelector';
 import { getSessionLabel, triggerA4Print } from '../../lib/sessionHelper';
 
 interface AttendanceViewProps {
@@ -79,44 +80,44 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
     // Prioritize permanent room mapping (valid across all exam days)
     const roomStudents = StorageService.getStudentsForRoom(activeSchedule.roomId);
-    if (roomStudents.length > 0) {
-      return roomStudents;
-    }
+    const candidateList = roomStudents.length > 0 ? roomStudents : (() => {
+      const studentMap = new Map(students.map((s) => [s.id, s]));
+      const list: Student[] = [];
+      const seenStudentIds = new Set<string>();
 
-    const studentMap = new Map(students.map((s) => [s.id, s]));
-    const list: Student[] = [];
-    const seenStudentIds = new Set<string>();
+      activeSchedule.groups.forEach((grp) => {
+        if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+          grp.selectedStudentIds.forEach((sid) => {
+            const s = studentMap.get(sid);
+            if (s && !seenStudentIds.has(s.id)) {
+              seenStudentIds.add(s.id);
+              list.push(s);
+            }
+          });
+        } else {
+          const classStudents = students
+            .filter((s) => s.classId === grp.classId && s.status === 'AKTIF')
+            .slice(0, grp.participantCount || undefined);
+          classStudents.forEach((s) => {
+            if (!seenStudentIds.has(s.id)) {
+              seenStudentIds.add(s.id);
+              list.push(s);
+            }
+          });
+        }
+      });
+      return list;
+    })();
 
-    activeSchedule.groups.forEach((grp) => {
-      if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
-        grp.selectedStudentIds.forEach((sid) => {
-          const s = studentMap.get(sid);
-          if (s && !seenStudentIds.has(s.id)) {
-            seenStudentIds.add(s.id);
-            list.push(s);
-          }
-        });
-      } else {
-        const classStudents = students
-          .filter((s) => s.classId === grp.classId && s.status === 'AKTIF')
-          .slice(0, grp.participantCount || undefined);
-        classStudents.forEach((s) => {
-          if (!seenStudentIds.has(s.id)) {
-            seenStudentIds.add(s.id);
-            list.push(s);
-          }
-        });
-      }
+    // Urutkan semua Daftar Nama Siswa berdasarkan Abjad Nama Lengkap dan Kelas
+    return [...candidateList].sort((a, b) => {
+      const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+      if (nameComp !== 0) return nameComp;
+      const clsA = classMap.get(a.classId)?.name || a.classId || '';
+      const clsB = classMap.get(b.classId)?.name || b.classId || '';
+      return clsA.localeCompare(clsB, 'id', { numeric: true });
     });
-
-    // Sort by exam number if available, otherwise by name
-    return list.sort((a, b) => {
-      if (a.examNumber && b.examNumber) {
-        return a.examNumber.localeCompare(b.examNumber, 'id', { numeric: true });
-      }
-      return a.name.localeCompare(b.name, 'id', { numeric: true });
-    });
-  }, [activeSchedule, students]);
+  }, [activeSchedule, students, classMap]);
 
   // Attendance lookup for quick status editing
   const attendanceMap = useMemo(() => {
@@ -402,53 +403,38 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
           {activeTab === 'STUDENT' ? (
             <>
-              {/* Schedule Picker Bar */}
-              <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
-                    Pilih Ruang &amp; Sesi:
-                  </label>
-                  <select
-                    value={selectedScheduleId}
-                    onChange={(e) => setSelectedScheduleId(e.target.value)}
-                    className="w-full sm:w-auto px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-blue-500"
-                  >
-                    {schedules.map((s) => {
-                      const r = roomMap.get(s.roomId);
-                      return (
-                        <option key={s.id} value={s.id}>
-                          {s.date} | {getSessionLabel(s.session)} ({s.startTime}-{s.endTime}) | Ruang:{' '}
-                          {r ? r.code : s.roomId}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={setAllPresent}
-                    className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-md text-xs font-medium flex items-center gap-1 transition-colors"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    Tandai Semua Hadir
-                  </button>
-                </div>
-              </div>
+              {/* 3-Step Schedule Picker: 1. Tanggal, 2. Ruang, 3. Sesi */}
+              <ExamScheduleSelector
+                schedules={schedules}
+                rooms={rooms}
+                subjects={subjects}
+                selectedScheduleId={selectedScheduleId}
+                onSelectScheduleId={setSelectedScheduleId}
+              />
 
               {/* Student Attendance Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div>
+                  <div className="flex items-center gap-2">
                     <span className="font-bold text-slate-800">
                       Daftar Peserta di Ruang {activeRoom?.code} ({activeRoom?.name})
                     </span>
-                    <span className="text-slate-500 ml-2">
-                      Total {assignedStudents.length} Peserta Terdaftar
+                    <span className="text-[11px] text-slate-500">
+                      (Total: {assignedStudents.length} siswa • Diurutkan Berdasarkan Abjad Nama &amp; Kelas)
                     </span>
                   </div>
-                  <div className="text-[11px] text-slate-500">
-                    Pengawas: {activeSup1?.name || '-'} {activeSup2 ? `& ${activeSup2.name}` : ''}
+
+                  <div className="flex items-center gap-3">
+                    <div className="text-[11px] text-slate-500">
+                      Pengawas: <span className="font-semibold text-slate-700">{activeSup1?.name || '-'} {activeSup2 ? `& ${activeSup2.name}` : ''}</span>
+                    </div>
+                    <button
+                      onClick={setAllPresent}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      Tandai Semua Hadir
+                    </button>
                   </div>
                 </div>
 

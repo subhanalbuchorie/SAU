@@ -9,6 +9,7 @@ import {
   User,
   Calendar,
   FileText,
+  Lock,
   Trash2,
   Database,
   AlertTriangle,
@@ -80,6 +81,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const backupLogo = typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null;
     return {
       ...settings,
+      adminPassword: settings.adminPassword || 'admin123',
       logoUrl: settings.logoUrl || backupLogo || ''
     };
   });
@@ -91,6 +93,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const backupLogo = typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null;
     setFormData((prev) => ({
       ...settings,
+      adminPassword: settings.adminPassword || prev.adminPassword || 'admin123',
       logoUrl: settings.logoUrl || prev.logoUrl || backupLogo || ''
     }));
   }, [settings]);
@@ -718,6 +721,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
         )}
+
+        {/* Keamanan & Sandi Akses Admin */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs space-y-4">
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
+            <Lock className="w-4 h-4 text-indigo-600" />
+            <h3 className="text-sm font-bold text-slate-800">
+              Keamanan Akses &amp; Password Admin
+            </h3>
+          </div>
+
+          <div className="max-w-md space-y-1.5">
+            <label className="block text-xs font-medium text-slate-700">
+              Password Masuk Admin (Beralih dari Akun Pengawas) <span className="text-rose-500">*</span>
+            </label>
+            <input
+              type="text"
+              name="adminPassword"
+              value={formData.adminPassword || ''}
+              onChange={handleChange}
+              placeholder="Contoh: admin123"
+              required
+              className="w-full px-3 py-1.5 border border-slate-200 rounded-md text-xs font-mono focus:ring-1 focus:ring-blue-500 bg-slate-50 focus:bg-white"
+            />
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Mode awal aplikasi selalu berada di <strong>Akun Pengawas</strong>. Sandi ini wajib dimasukkan ketika ingin beralih ke <strong>Akun Administrator</strong> untuk mengubah data, jadwal, atau pengaturan.
+            </p>
+          </div>
+        </div>
 
         <div className="flex justify-end">
           <button

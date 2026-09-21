@@ -161,7 +161,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           shortLabel: 'Jadwal',
           icon: CalendarDays,
           badge: 'Ruang & Sesi',
-          roles: ['ADMIN', 'PANITIA', 'OPERATOR', 'PENGAWAS']
+          roles: ['ADMIN', 'PANITIA', 'OPERATOR']
         },
         {
           key: 'attendance' as NavItemKey,

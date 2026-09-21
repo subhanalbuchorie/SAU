@@ -71,19 +71,27 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
 
   const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes]);
 
-  // Filtered
+  // Filtered and sorted by Alphabetical Name and Class
   const filtered = useMemo(() => {
-    return students.filter((s) => {
-      const matchSearch =
-        s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.nis.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.nisn.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (s.examNumber && s.examNumber.toLowerCase().includes(searchTerm.toLowerCase()));
-      const matchClass = classFilter === 'ALL' || s.classId === classFilter;
-      const matchStatus = statusFilter === 'ALL' || s.status === statusFilter;
-      return matchSearch && matchClass && matchStatus;
-    });
-  }, [students, searchTerm, classFilter, statusFilter]);
+    return students
+      .filter((s) => {
+        const matchSearch =
+          s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          s.nis.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          s.nisn.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (s.examNumber && s.examNumber.toLowerCase().includes(searchTerm.toLowerCase()));
+        const matchClass = classFilter === 'ALL' || s.classId === classFilter;
+        const matchStatus = statusFilter === 'ALL' || s.status === statusFilter;
+        return matchSearch && matchClass && matchStatus;
+      })
+      .sort((a, b) => {
+        const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+        if (nameComp !== 0) return nameComp;
+        const clsA = classMap.get(a.classId)?.name || a.classId || '';
+        const clsB = classMap.get(b.classId)?.name || b.classId || '';
+        return clsA.localeCompare(clsB, 'id', { numeric: true });
+      });
+  }, [students, searchTerm, classFilter, statusFilter, classMap]);
 
   // Paginated
   const totalPages = Math.ceil(filtered.length / pageSize) || 1;

@@ -1395,8 +1395,19 @@ export const StorageService = {
     StorageService.addAuditLog('Import Pengawas', 'Supervisor', undefined, `Mengimpor / memperbarui ${newSupervisors.length} data pengawas.`);
   },
 
-  // Students
-  getStudents: (): Student[] => getStorageItem(STORAGE_KEYS.STUDENTS, initialStudents),
+  // Students - sorted by Alphabetical Name and Class
+  getStudents: (): Student[] => {
+    const list = getStorageItem<Student[]>(STORAGE_KEYS.STUDENTS, initialStudents);
+    const classes = getStorageItem<ClassItem[]>(STORAGE_KEYS.CLASSES, initialClasses);
+    const classMap = new Map(classes.map((c) => [c.id, c.name || c.code]));
+    return [...list].sort((a, b) => {
+      const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+      if (nameComp !== 0) return nameComp;
+      const clsA = classMap.get(a.classId) || a.classId || '';
+      const clsB = classMap.get(b.classId) || b.classId || '';
+      return clsA.localeCompare(clsB, 'id', { numeric: true });
+    });
+  },
   saveStudent: (std: Student): { success: boolean; message?: string } => {
     const students = StorageService.getStudents();
     // Check unique NIS
@@ -1812,7 +1823,17 @@ export const StorageService = {
 
   // Users & Auth
   getUsers: (): User[] => getStorageItem(STORAGE_KEYS.USERS, initialUsers),
-  getCurrentUser: (): User => getStorageItem(STORAGE_KEYS.CURRENT_USER, initialUsers[0]),
+  getCurrentUser: (): User => {
+    const users = StorageService.getUsers();
+    const pengawasUser = users.find((u) => u.role === 'PENGAWAS') || {
+      id: 'user-4',
+      username: 'pengawas',
+      fullName: 'Pengawas Ruang',
+      role: 'PENGAWAS' as Role,
+      isActive: true
+    };
+    return getStorageItem(STORAGE_KEYS.CURRENT_USER, pengawasUser);
+  },
   setCurrentUser: (user: User) => {
     setStorageItem(STORAGE_KEYS.CURRENT_USER, user);
     StorageService.addAuditLog('Login Pengguna', 'User', user.id, `Pengguna ${user.username} (${user.role}) aktif di sistem.`);

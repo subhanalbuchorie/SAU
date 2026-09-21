@@ -35,11 +35,27 @@ import {
   SchoolSetting,
   AuditLog
 } from './types';
-import { Sparkles, Database, AlertTriangle } from 'lucide-react';
+import { Sparkles, Database, AlertTriangle, Lock, Eye, EyeOff, ShieldCheck, X } from 'lucide-react';
 
 export default function App() {
-  // State for all data models
-  const [currentUser, setCurrentUser] = useState<User>(StorageService.getCurrentUser());
+  // Mode Default saat aplikasi dibuka berada di Akun Pengawas
+  const [currentUser, setCurrentUser] = useState<User>(() => {
+    const defaultUser = StorageService.getCurrentUser();
+    if (defaultUser.role !== 'PENGAWAS') {
+      const users = StorageService.getUsers();
+      const pengawas = users.find((u) => u.role === 'PENGAWAS') || {
+        id: 'user-4',
+        username: 'pengawas',
+        fullName: 'Pengawas Ruang',
+        role: 'PENGAWAS' as UserRole,
+        isActive: true
+      };
+      StorageService.setCurrentUser(pengawas);
+      return pengawas;
+    }
+    return defaultUser;
+  });
+
   const [currentView, setCurrentView] = useState('dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(() => {
@@ -50,6 +66,13 @@ export default function App() {
     }
   });
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
+
+  // Admin Password Verification Modal state
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [pendingTargetRole, setPendingTargetRole] = useState<UserRole | null>(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   // Toggle sidebar for both mobile drawer and desktop collapse
   const handleToggleSidebar = useCallback(() => {
@@ -111,12 +134,40 @@ export default function App() {
 
   // Role switch handler
   const handleRoleChange = (role: UserRole) => {
+    if (role === currentUser.role) return;
+
+    // If switching from PENGAWAS to an Admin/Panitia/Operator role, require Admin Password
+    if (role !== 'PENGAWAS' && currentUser.role === 'PENGAWAS') {
+      setPendingTargetRole(role);
+      setPasswordInput('');
+      setPasswordError(null);
+      setIsPasswordModalOpen(true);
+      return;
+    }
+
+    // Direct switch (e.g. going back to PENGAWAS)
     const updated = StorageService.setCurrentUserRole(role);
     setCurrentUser(updated);
 
-    // If supervisor tries to view admin-only settings, redirect to dashboard or schedules
-    if (role === 'PENGAWAS' && ['settings', 'audit'].includes(currentView)) {
-      setCurrentView('schedules');
+    // If supervisor tries to view admin-only settings or schedules, redirect to attendance
+    if (role === 'PENGAWAS' && ['settings', 'audit', 'schedules'].includes(currentView)) {
+      setCurrentView('attendance');
+    }
+  };
+
+  const handleVerifyAdminPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    const correctPassword = settings.adminPassword || 'admin123';
+    if (passwordInput.trim() === correctPassword.trim()) {
+      if (pendingTargetRole) {
+        const updated = StorageService.setCurrentUserRole(pendingTargetRole);
+        setCurrentUser(updated);
+      }
+      setIsPasswordModalOpen(false);
+      setPasswordInput('');
+      setPasswordError(null);
+    } else {
+      setPasswordError('Password admin salah! Silakan masukkan password yang tepat (diatur di Pengaturan Umum).');
     }
   };
 
@@ -394,6 +445,95 @@ export default function App() {
         isOpen={isDocModalOpen}
         onClose={() => setIsDocModalOpen(false)}
       />
+
+      {/* Admin Password Verification Modal */}
+      {isPasswordModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5 text-indigo-700">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center">
+                  <Lock className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Verifikasi Sandi Administrator</h3>
+                  <p className="text-[11px] text-slate-500">Konfirmasi hak akses ke mode Admin / Pengelola</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsPasswordModalOpen(false);
+                  setPasswordError(null);
+                  setPasswordInput('');
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleVerifyAdminPassword} className="mt-4 space-y-4">
+              <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900 leading-relaxed">
+                Mode awal aplikasi adalah <strong>Akun Pengawas</strong>. Untuk beralih ke hak akses <strong>{pendingTargetRole || 'ADMIN'}</strong>, silakan masukkan password admin yang telah dikonfigurasi di Pengaturan Umum.
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Password Admin <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={passwordInput}
+                    onChange={(e) => {
+                      setPasswordInput(e.target.value);
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    placeholder="Masukkan password admin..."
+                    autoFocus
+                    required
+                    className="w-full pl-3 pr-10 py-2 border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {passwordError && (
+                  <p className="text-xs text-rose-600 mt-1.5 flex items-center gap-1 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {passwordError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPasswordModalOpen(false);
+                    setPasswordError(null);
+                    setPasswordInput('');
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  Buka Akses Admin
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

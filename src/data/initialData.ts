@@ -37,6 +37,7 @@ export const initialSchoolSetting: SchoolSetting = {
   examStartDate: new Date().toISOString().split('T')[0],
   examEndDate: new Date().toISOString().split('T')[0],
   examNumberFormat: '{seq:3}/{kelas}/US/{tahun}',
+  adminPassword: 'admin123',
   updatedAt: new Date().toISOString()
 };
 

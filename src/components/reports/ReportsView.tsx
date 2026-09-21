@@ -30,6 +30,7 @@ import {
   SchoolSetting
 } from '../../types';
 import { ExcelService } from '../../lib/excel';
+import { StorageService } from '../../lib/storage';
 import { PrintHeader } from '../common/PrintHeader';
 import { getSessionLabel, triggerA4Print } from '../../lib/sessionHelper';
 
@@ -99,37 +100,62 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     return scheduleMap.get(selectedScheduleId) || schedules[0];
   }, [selectedScheduleId, scheduleMap, schedules]);
 
-  // Students for active schedule
+  // Title and Subtitle dynamically formatted from General Settings
+  const examTitleSuffix = (settings.examName || 'Ujian Sekolah').toUpperCase();
+  const reportSubtitle = `Semester ${settings.semester || 'GENAP'} • Tahun Pelajaran ${settings.academicYear || '2025/2026'}`;
+
+  // Students for active schedule (sorted by Alphabetical Name and Class)
   const activeScheduleStudents = useMemo(() => {
     if (!activeSchedule) return [];
-    const list: Student[] = [];
-    const seen = new Set<string>();
 
-    activeSchedule.groups.forEach((grp) => {
-      if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
-        grp.selectedStudentIds.forEach((sid) => {
-          const s = studentMap.get(sid);
-          if (s && !seen.has(s.id)) {
-            seen.add(s.id);
-            list.push(s);
-          }
-        });
-      } else {
-        const clsStudents = students.filter(
-          (s) => s.classId === grp.classId && s.status === 'AKTIF'
-        );
-        const sliced = clsStudents.slice(0, grp.participantCount || undefined);
-        sliced.forEach((s) => {
-          if (!seen.has(s.id)) {
-            seen.add(s.id);
-            list.push(s);
-          }
-        });
-      }
+    // Prioritize permanent room mapping
+    const roomStudents = StorageService.getStudentsForRoom(activeSchedule.roomId);
+    let candidateList: Student[] = [];
+
+    if (roomStudents.length > 0) {
+      candidateList = roomStudents;
+    } else {
+      const list: Student[] = [];
+      const seen = new Set<string>();
+
+      activeSchedule.groups.forEach((grp) => {
+        if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+          grp.selectedStudentIds.forEach((sid) => {
+            const s = studentMap.get(sid);
+            if (s && !seen.has(s.id)) {
+              seen.add(s.id);
+              list.push(s);
+            }
+          });
+        } else {
+          const clsStudents = students.filter(
+            (s) => s.classId === grp.classId && s.status === 'AKTIF'
+          );
+          const sliced = clsStudents.slice(0, grp.participantCount || undefined);
+          sliced.forEach((s) => {
+            if (!seen.has(s.id)) {
+              seen.add(s.id);
+              list.push(s);
+            }
+          });
+        }
+      });
+      candidateList = list;
+    }
+
+    if (selectedClassId !== 'ALL') {
+      candidateList = candidateList.filter((s) => s.classId === selectedClassId);
+    }
+
+    // Urutkan semua Daftar Nama Siswa berdasarkan Abjad Nama Lengkap dan Kelas
+    return [...candidateList].sort((a, b) => {
+      const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+      if (nameComp !== 0) return nameComp;
+      const clsA = classMap.get(a.classId)?.name || a.classId || '';
+      const clsB = classMap.get(b.classId)?.name || b.classId || '';
+      return clsA.localeCompare(clsB, 'id', { numeric: true });
     });
-
-    return list.sort((a, b) => a.name.localeCompare(b.name));
-  }, [activeSchedule, students, studentMap]);
+  }, [activeSchedule, students, studentMap, selectedClassId, classMap]);
 
   // Map of student attendance for active schedule
   const activeAttendanceMap = useMemo(() => {
@@ -147,16 +173,56 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     return minuteMap.get(activeSchedule.id) || null;
   }, [activeSchedule, minuteMap]);
 
+  // Filtered and sorted student list respecting Room and Class filters and alphabetical order
+  const filteredAndSortedStudents = useMemo(() => {
+    let list: Student[] = students;
+
+    if (selectedRoomId !== 'ALL') {
+      const roomStudents = StorageService.getStudentsForRoom(selectedRoomId);
+      if (roomStudents.length > 0) {
+        list = roomStudents;
+      } else {
+        const roomSchedules = schedules.filter((s) => s.roomId === selectedRoomId);
+        const sidSet = new Set<string>();
+        roomSchedules.forEach((sch) => {
+          sch.groups.forEach((g) => {
+            if (g.selectedStudentIds && g.selectedStudentIds.length > 0) {
+              g.selectedStudentIds.forEach((sid) => sidSet.add(sid));
+            } else {
+              students
+                .filter((st) => st.classId === g.classId && st.status === 'AKTIF')
+                .slice(0, g.participantCount || undefined)
+                .forEach((st) => sidSet.add(st.id));
+            }
+          });
+        });
+        list = students.filter((st) => sidSet.has(st.id));
+      }
+    }
+
+    if (selectedClassId !== 'ALL') {
+      list = list.filter((s) => s.classId === selectedClassId);
+    }
+
+    return [...list].sort((a, b) => {
+      const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+      if (nameComp !== 0) return nameComp;
+      const clsA = classMap.get(a.classId)?.name || a.classId || '';
+      const clsB = classMap.get(b.classId)?.name || b.classId || '';
+      return clsA.localeCompare(clsB, 'id', { numeric: true });
+    });
+  }, [students, selectedRoomId, selectedClassId, schedules, classMap]);
+
   const reportList = [
     { key: 'JADWAL_TOTAL' as ReportType, label: 'A. Jadwal Ujian Keseluruhan', icon: Calendar },
     { key: 'JADWAL_RUANG' as ReportType, label: 'B. Jadwal Ujian per Ruang', icon: DoorOpen },
     { key: 'JADWAL_KELAS' as ReportType, label: 'C. Jadwal Ujian per Kelas', icon: GraduationCap },
     { key: 'JADWAL_PENGAWAS' as ReportType, label: 'D. Jadwal Pengawas Ujian', icon: UserCheck },
-    { key: 'REKAP_PENGAWAS' as ReportType, label: 'E. Rekap Kebutuhan Pengawas', icon: UserCheck },
+    { key: 'REKAP_PENGAWAS' as ReportType, label: 'E. Rekap Kehadiran Pengawas', icon: UserCheck },
     { key: 'DAFTAR_HADIR_SISWA' as ReportType, label: 'F. Daftar Hadir Siswa', icon: ClipboardList },
     { key: 'DAFTAR_HADIR_PENGAWAS' as ReportType, label: 'G. Daftar Hadir Pengawas', icon: UserCheck },
     { key: 'BERITA_ACARA' as ReportType, label: 'H. Berita Acara Ujian', icon: FileCheck },
-    { key: 'REKAP_KETIDAKHADIRAN' as ReportType, label: 'I. Rekap Ketidakhadiran Siswa', icon: ShieldAlert },
+    { key: 'REKAP_KETIDAKHADIRAN' as ReportType, label: 'I. Rekap Ketidakhadiran Siswa per Hari', icon: ShieldAlert },
     { key: 'PEMBAGIAN_RUANG' as ReportType, label: 'J. Denah & Pembagian Ruang', icon: DoorOpen },
     { key: 'KARTU_PESERTA' as ReportType, label: 'K. Cetak Kartu Peserta', icon: IdCard },
     { key: 'LABEL_MEJA' as ReportType, label: 'L. Label Meja Peserta Ujian', icon: Tag },
@@ -252,24 +318,34 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         break;
 
       case 'REKAP_PENGAWAS':
-        data = supervisors.map((sup, idx) => {
-          const duties = schedules.filter((s) =>
-            s.supervisors.some((sa) => sa.supervisorId === sup.id)
-          );
-          const roomsAssigned = Array.from(
-            new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
-          ).join(', ');
-          return {
-            No: idx + 1,
-            Nama_Pengawas: sup.name,
-            NIP: sup.nip || '-',
-            Instansi_Asal: sup.subject || settings.schoolName,
-            No_Telepon: sup.phone || '-',
-            Total_Sesi_Tugas: duties.length,
-            Ruang_Diawasi: roomsAssigned || '-',
-            Keterangan: sup.notes || '-'
-          };
-        });
+        data = supervisors
+          .filter((sup) => {
+            if (selectedRoomId === 'ALL') return true;
+            return schedules.some(
+              (s) =>
+                s.roomId === selectedRoomId &&
+                s.supervisors.some((sa) => sa.supervisorId === sup.id)
+            );
+          })
+          .map((sup, idx) => {
+            const duties = schedules.filter((s) => {
+              const hasDuty = s.supervisors.some((sa) => sa.supervisorId === sup.id);
+              if (!hasDuty) return false;
+              if (selectedRoomId !== 'ALL') return s.roomId === selectedRoomId;
+              if (selectedDate !== 'ALL') return s.date === selectedDate;
+              return true;
+            });
+            const roomsAssigned = Array.from(
+              new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
+            ).join(', ');
+            return {
+              No: idx + 1,
+              Nama_Pengawas: sup.name,
+              Jumlah_Sesi_Bertugas: `${duties.length} Sesi`,
+              Ruang_Bertugas: roomsAssigned || '-',
+              Keterangan: duties.length > 0 ? 'Aktif Bertugas' : 'Pengawas Cadangan'
+            };
+          });
         break;
 
       case 'DAFTAR_HADIR_SISWA':
@@ -328,22 +404,96 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         break;
 
       case 'REKAP_KETIDAKHADIRAN': {
-        const absents = attendances.filter((a) => ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status));
-        data = absents.map((att, idx) => {
-          const stu = studentMap.get(att.studentId);
-          const sch = scheduleMap.get(att.scheduleId);
-          const r = sch ? roomMap.get(sch.roomId) : null;
+        const targetDate = selectedDate !== 'ALL' ? selectedDate : (uniqueDates[0] || '');
+        const displayedRooms = rooms.filter(
+          (r) => selectedRoomId === 'ALL' || r.id === selectedRoomId
+        );
+
+        data = displayedRooms.map((room, idx) => {
+          const permStudents = StorageService.getStudentsForRoom(room.id);
+          let candidateStudents: Student[] = [];
+
+          if (permStudents.length > 0) {
+            candidateStudents = permStudents;
+          } else {
+            const roomSchedules = schedules.filter(
+              (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
+            );
+            const seen = new Set<string>();
+            roomSchedules.forEach((sch) => {
+              sch.groups.forEach((grp) => {
+                if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+                  grp.selectedStudentIds.forEach((sid) => {
+                    const st = studentMap.get(sid);
+                    if (st && !seen.has(st.id)) {
+                      seen.add(st.id);
+                      candidateStudents.push(st);
+                    }
+                  });
+                } else {
+                  const clsStudents = students.filter(
+                    (s) => s.classId === grp.classId && s.status === 'AKTIF'
+                  );
+                  clsStudents.slice(0, grp.participantCount || undefined).forEach((st) => {
+                    if (!seen.has(st.id)) {
+                      seen.add(st.id);
+                      candidateStudents.push(st);
+                    }
+                  });
+                }
+              });
+            });
+          }
+
+          if (selectedClassId !== 'ALL') {
+            candidateStudents = candidateStudents.filter((s) => s.classId === selectedClassId);
+          }
+
+          // Sort Alphabetically
+          candidateStudents.sort((a, b) => {
+            const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+            if (nameComp !== 0) return nameComp;
+            const clsA = classMap.get(a.classId)?.name || a.classId || '';
+            const clsB = classMap.get(b.classId)?.name || b.classId || '';
+            return clsA.localeCompare(clsB, 'id', { numeric: true });
+          });
+
+          const targetSchedules = schedules.filter(
+            (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
+          );
+          const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
+          const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
+          const attMap = new Map<string, StudentAttendance>();
+          roomAttendances.forEach((a) => attMap.set(a.studentId, a));
+
+          const absentList: { student: Student; status: string; notes?: string }[] = [];
+          candidateStudents.forEach((stu) => {
+            const att = attMap.get(stu.id);
+            if (att && ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
+              absentList.push({ student: stu, status: att.status, notes: att.notes });
+            }
+          });
+
+          const seharusnya = candidateStudents.length;
+          const tidakHadir = absentList.length;
+          const hadir = Math.max(0, seharusnya - tidakHadir);
+          const keterangan =
+            absentList.length > 0
+              ? absentList
+                  .map(
+                    (item, i) =>
+                      `${i + 1}. ${item.student.name} (${classMap.get(item.student.classId)?.name || '-'} - ${item.status})`
+                  )
+                  .join('; ')
+              : 'Nihil / Hadir Semua';
+
           return {
             No: idx + 1,
-            Tanggal: sch?.date || '-',
-            Sesi: sch?.session || '-',
-            Ruang: r ? `${r.code} (${r.name})` : '-',
-            No_Peserta: stu?.examNumber || '-',
-            NIS: stu?.nis || '-',
-            Nama_Siswa: stu?.name || '-',
-            Kelas: stu ? classMap.get(stu.classId)?.name : '-',
-            Alasan: att.status,
-            Catatan: att.notes || '-'
+            Ruang: `${room.code} - ${room.name}`,
+            Jumlah_Seharusnya: seharusnya,
+            Jumlah_Hadir: hadir,
+            Jumlah_Tidak_Hadir: tidakHadir,
+            Keterangan: keterangan
           };
         });
         break;
@@ -375,7 +525,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       case 'KARTU_PESERTA':
       case 'LABEL_MEJA':
       case 'PESERTA_PER_RUANG':
-        data = students.map((s, idx) => ({
+        data = filteredAndSortedStudents.map((s, idx) => ({
           No: idx + 1,
           No_Peserta: s.examNumber,
           NIS: s.nis,
@@ -468,98 +618,88 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 no-print text-xs">
         <div className="flex items-center gap-2 text-slate-700 font-semibold">
           <Filter className="w-4 h-4 text-blue-600" />
-          <span>Filter Laporan Terpilih:</span>
+          <span>Filter Laporan:</span>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Room selector - always available */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-600 font-medium">Ruang:</span>
+            <select
+              value={selectedRoomId}
+              onChange={(e) => setSelectedRoomId(e.target.value)}
+              className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="ALL">-- Semua Ruang --</option>
+              {rooms.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.code} - {r.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Class selector - always available */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-600 font-medium">Kelas:</span>
+            <select
+              value={selectedClassId}
+              onChange={(e) => setSelectedClassId(e.target.value)}
+              className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="ALL">-- Semua Kelas --</option>
+              {classes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.major})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date selector */}
+          {uniqueDates.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium">Tanggal:</span>
+              <select
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="ALL">-- Semua Tanggal --</option>
+                {uniqueDates.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Schedule selector for single-session reports */}
           {(activeReport === 'DAFTAR_HADIR_SISWA' || activeReport === 'BERITA_ACARA') && (
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-600 font-medium">Pilih Jadwal / Sesi:</span>
+              <span className="text-slate-600 font-medium">Sesi Ujian:</span>
               <select
                 value={selectedScheduleId}
                 onChange={(e) => setSelectedScheduleId(e.target.value)}
-                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500 max-w-[260px] truncate"
               >
-                {schedules.map((sch) => {
-                  const r = roomMap.get(sch.roomId);
-                  const cls = sch.groups.map((g) => classMap.get(g.classId)?.name).join('/');
-                  const sub = sch.groups.map((g) => subjectMap.get(g.subjectId)?.name).join('/');
-                  return (
-                    <option key={sch.id} value={sch.id}>
-                      {sch.date} - Sesi {sch.session} | {r?.code} | {cls} - {sub}
-                    </option>
-                  );
-                })}
+                {schedules
+                  .filter((sch) => selectedRoomId === 'ALL' || sch.roomId === selectedRoomId)
+                  .filter((sch) => selectedDate === 'ALL' || sch.date === selectedDate)
+                  .map((sch) => {
+                    const r = roomMap.get(sch.roomId);
+                    const cls = sch.groups.map((g) => classMap.get(g.classId)?.name).join('/');
+                    const sub = sch.groups.map((g) => subjectMap.get(g.subjectId)?.name).join('/');
+                    return (
+                      <option key={sch.id} value={sch.id}>
+                        {sch.date} - Sesi {sch.session} | {r?.code} | {cls} - {sub}
+                      </option>
+                    );
+                  })}
               </select>
             </div>
           )}
-
-          {/* Class selector */}
-          {(activeReport === 'JADWAL_KELAS' ||
-            activeReport === 'KARTU_PESERTA' ||
-            activeReport === 'LABEL_MEJA' ||
-            activeReport === 'REKAP_KETIDAKHADIRAN') && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-600 font-medium">Kelas:</span>
-              <select
-                value={selectedClassId}
-                onChange={(e) => setSelectedClassId(e.target.value)}
-                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="ALL">-- Semua Kelas --</option>
-                {classes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.major})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Room selector */}
-          {(activeReport === 'JADWAL_RUANG' ||
-            activeReport === 'PEMBAGIAN_RUANG' ||
-            activeReport === 'PESERTA_PER_RUANG' ||
-            activeReport === 'LABEL_MEJA') && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-600 font-medium">Ruang:</span>
-              <select
-                value={selectedRoomId}
-                onChange={(e) => setSelectedRoomId(e.target.value)}
-                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="ALL">-- Semua Ruang --</option>
-                {rooms.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.code} - {r.name} ({r.building})
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Date selector */}
-          {(activeReport === 'JADWAL_TOTAL' ||
-            activeReport === 'JADWAL_PENGAWAS' ||
-            activeReport === 'DAFTAR_HADIR_PENGAWAS') &&
-            uniqueDates.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                <span className="text-slate-600 font-medium">Tanggal Ujian:</span>
-                <select
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="ALL">-- Semua Tanggal --</option>
-                  {uniqueDates.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
         </div>
       </div>
 
@@ -571,8 +711,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="JADWAL KESELURUHAN PELAKSANAAN UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear} - Semester ${settings.semester}`}
+              documentTitle={`JADWAL KESELURUHAN PELAKSANAAN ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <table className="w-full border-collapse border border-black text-xs mt-4">
@@ -590,9 +730,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <tbody>
                 {schedules
                   .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .filter((s) => selectedRoomId === 'ALL' || s.roomId === selectedRoomId)
+                  .filter(
+                    (s) =>
+                      selectedClassId === 'ALL' || s.groups.some((g) => g.classId === selectedClassId)
+                  )
                   .map((sch, idx) => {
                     const r = roomMap.get(sch.roomId);
-                    const totalP = sch.groups.reduce((a, b) => a + b.participantCount, 0);
+                    const filteredGroups = sch.groups.filter(
+                      (g) => selectedClassId === 'ALL' || g.classId === selectedClassId
+                    );
+                    const totalP = filteredGroups.reduce((a, b) => a + b.participantCount, 0);
                     const supNames = sch.supervisors
                       .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
                       .filter(Boolean)
@@ -611,7 +759,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                           {r?.code} ({r?.name})
                         </td>
                         <td className="border border-black p-1.5">
-                          {sch.groups.map((grp) => {
+                          {filteredGroups.map((grp) => {
                             const cls = classMap.get(grp.classId);
                             const sub = subjectMap.get(grp.subjectId);
                             return (
@@ -640,14 +788,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="REKAPITULASI JADWAL UJIAN PER RUANG"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`REKAPITULASI JADWAL UJIAN PER RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
             <div className="space-y-6 mt-4">
               {rooms
                 .filter((r) => selectedRoomId === 'ALL' || r.id === selectedRoomId)
                 .map((room) => {
-                  const roomSchedules = schedules.filter((s) => s.roomId === room.id);
+                  const roomSchedules = schedules
+                    .filter((s) => s.roomId === room.id)
+                    .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                    .filter(
+                      (s) =>
+                        selectedClassId === 'ALL' ||
+                        s.groups.some((g) => g.classId === selectedClassId)
+                    );
                   return (
                     <div key={room.id} className="border border-black p-3 rounded print-avoid-break">
                       <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
@@ -674,6 +829,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                               .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
                               .filter(Boolean)
                               .join(', ');
+                            const filteredGroups = sch.groups.filter(
+                              (g) => selectedClassId === 'ALL' || g.classId === selectedClassId
+                            );
                             return (
                               <tr key={sch.id}>
                                 <td className="border border-black p-1 text-center">{i + 1}</td>
@@ -682,7 +840,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                                   {sch.startTime} - {sch.endTime} ({getSessionLabel(sch.session)})
                                 </td>
                                 <td className="border border-black p-1">
-                                  {sch.groups
+                                  {filteredGroups
                                     .map(
                                       (g) =>
                                         `${classMap.get(g.classId)?.name}: ${
@@ -693,7 +851,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                                 </td>
                                 <td className="border border-black p-1 text-[11px]">{supNames || '-'}</td>
                                 <td className="border border-black p-1 text-center font-bold">
-                                  {sch.groups.reduce((a, b) => a + b.participantCount, 0)}
+                                  {filteredGroups.reduce((a, b) => a + b.participantCount, 0)}
                                 </td>
                               </tr>
                             );
@@ -712,16 +870,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="JADWAL PELAKSANAAN UJIAN PER KELAS"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`JADWAL PELAKSANAAN UJIAN PER KELAS - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
             <div className="space-y-6 mt-4">
               {classes
                 .filter((c) => selectedClassId === 'ALL' || c.id === selectedClassId)
                 .map((cls) => {
-                  const classSchedules = schedules.filter((s) =>
-                    s.groups.some((g) => g.classId === cls.id)
-                  );
+                  const classSchedules = schedules
+                    .filter((s) => s.groups.some((g) => g.classId === cls.id))
+                    .filter((s) => selectedRoomId === 'ALL' || s.roomId === selectedRoomId)
+                    .filter((s) => selectedDate === 'ALL' || s.date === selectedDate);
                   return (
                     <div key={cls.id} className="border border-black p-3 rounded print-avoid-break">
                       <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
@@ -784,8 +943,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="JADWAL TUGAS PENGAWAS RUANG UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`JADWAL TUGAS PENGAWAS RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <table className="w-full border-collapse border border-black text-xs mt-4">
@@ -803,6 +962,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <tbody>
                 {schedules
                   .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .filter((s) => selectedRoomId === 'ALL' || s.roomId === selectedRoomId)
                   .flatMap((sch, sIdx) => {
                     const r = roomMap.get(sch.roomId);
                     const classMapel = sch.groups
@@ -841,60 +1001,65 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           </div>
         )}
 
-        {/* REPORT E: REKAP KEBUTUHAN PENGAWAS */}
+        {/* REPORT E: REKAP KEHADIRAN PENGAWAS */}
         {activeReport === 'REKAP_PENGAWAS' && (
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="REKAPITULASI KEBUTUHAN &amp; PENUGASAN PENGAWAS RUANG"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`REKAP KEHADIRAN PENGAWAS - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <table className="w-full border-collapse border border-black text-xs mt-4">
               <thead>
                 <tr className="bg-slate-100">
-                  <th className="border border-black p-1.5 text-center w-8">No</th>
-                  <th className="border border-black p-1.5 text-left">Nama Lengkap Pengawas</th>
-                  <th className="border border-black p-1.5 text-center">NIP / NUPTK</th>
-                  <th className="border border-black p-1.5 text-left">Unit Kerja / Asal</th>
-                  <th className="border border-black p-1.5 text-center">No. Kontak</th>
-                  <th className="border border-black p-1.5 text-center">Total Sesi Bertugas</th>
-                  <th className="border border-black p-1.5 text-left">Ruang Bertugas</th>
-                  <th className="border border-black p-1.5 text-center w-24">Tanda Tangan</th>
+                  <th className="border border-black p-2 text-center w-10">No</th>
+                  <th className="border border-black p-2 text-left">Nama Pengawas</th>
+                  <th className="border border-black p-2 text-center w-36">Jumlah Sesi Bertugas</th>
+                  <th className="border border-black p-2 text-left">Ruang Bertugas</th>
+                  <th className="border border-black p-2 text-center w-40">Keterangan</th>
                 </tr>
               </thead>
               <tbody>
-                {supervisors.map((sup, idx) => {
-                  const duties = schedules.filter((s) =>
-                    s.supervisors.some((sa) => sa.supervisorId === sup.id)
-                  );
-                  const roomCodes = Array.from(
-                    new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
-                  ).join(', ');
+                {supervisors
+                  .filter((sup) => {
+                    if (selectedRoomId === 'ALL') return true;
+                    return schedules.some(
+                      (s) =>
+                        s.roomId === selectedRoomId &&
+                        s.supervisors.some((sa) => sa.supervisorId === sup.id)
+                    );
+                  })
+                  .map((sup, idx) => {
+                    const duties = schedules.filter((s) => {
+                      const hasDuty = s.supervisors.some((sa) => sa.supervisorId === sup.id);
+                      if (!hasDuty) return false;
+                      if (selectedRoomId !== 'ALL') return s.roomId === selectedRoomId;
+                      if (selectedDate !== 'ALL') return s.date === selectedDate;
+                      return true;
+                    });
+                    const roomCodes = Array.from(
+                      new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
+                    ).join(', ');
 
-                  return (
-                    <tr key={sup.id}>
-                      <td className="border border-black p-1.5 text-center">{idx + 1}</td>
-                      <td className="border border-black p-1.5 font-bold">{sup.name}</td>
-                      <td className="border border-black p-1.5 text-center font-mono">
-                        {sup.nip || '-'}
-                      </td>
-                      <td className="border border-black p-1.5">
-                        {sup.subject || settings.schoolName}
-                      </td>
-                      <td className="border border-black p-1.5 text-center font-mono">
-                        {sup.phone || '-'}
-                      </td>
-                      <td className="border border-black p-1.5 text-center font-bold">
-                        {duties.length} Sesi
-                      </td>
-                      <td className="border border-black p-1.5 text-[11px]">{roomCodes || '-'}</td>
-                      <td className="border border-black p-1.5 text-center">
-                        <div className="h-6"></div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                    return (
+                      <tr key={sup.id}>
+                        <td className="border border-black p-2 text-center">{idx + 1}</td>
+                        <td className="border border-black p-2 font-bold">{sup.name}</td>
+                        <td className="border border-black p-2 text-center font-bold">
+                          {duties.length} Sesi
+                        </td>
+                        <td className="border border-black p-2">{roomCodes || '-'}</td>
+                        <td className="border border-black p-2 text-center">
+                          {duties.length > 0 ? (
+                            <span className="font-semibold text-emerald-800">Aktif Bertugas</span>
+                          ) : (
+                            <span className="text-slate-500 italic">Pengawas Cadangan</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -905,8 +1070,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="DAFTAR HADIR PESERTA UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear} - Semester ${settings.semester}`}
+              documentTitle={`DAFTAR HADIR PESERTA ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             {/* Session Information Table */}
@@ -1007,8 +1172,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="DAFTAR HADIR PENGAWAS RUANG UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`DAFTAR HADIR PENGAWAS RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <table className="w-full border-collapse border border-black text-xs mt-4">
@@ -1028,6 +1193,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <tbody>
                 {schedules
                   .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .filter((s) => selectedRoomId === 'ALL' || s.roomId === selectedRoomId)
                   .flatMap((sch, sIdx) => {
                     const r = roomMap.get(sch.roomId);
                     return sch.supervisors.map((sa, idx) => {
@@ -1071,14 +1237,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div className="space-y-4">
             <PrintHeader
               settings={settings}
-              documentTitle="BERITA ACARA PELAKSANAAN UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear} - Semester ${settings.semester}`}
+              documentTitle={`BERITA ACARA PELAKSANAAN ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="text-xs leading-relaxed space-y-3 text-justify">
               <p>
                 Pada hari ini, <strong>{activeSchedule.date}</strong>, telah diselenggarakan{' '}
-                <strong>Ujian Sekolah</strong> Tahun Pelajaran {settings.academicYear} di{' '}
+                <strong>{settings.examName || 'Ujian Sekolah'}</strong> {reportSubtitle} di{' '}
                 <strong>{settings.schoolName}</strong> untuk:
               </p>
 
@@ -1218,80 +1384,201 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         )}
 
         {/* REPORT I: REKAP KETIDAKHADIRAN */}
-        {activeReport === 'REKAP_KETIDAKHADIRAN' && (
-          <div>
-            <PrintHeader
-              settings={settings}
-              documentTitle="REKAPITULASI KETIDAKHADIRAN PESERTA UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
-            />
+        {activeReport === 'REKAP_KETIDAKHADIRAN' && (() => {
+          const targetDate = selectedDate !== 'ALL' ? selectedDate : (uniqueDates[0] || '');
+          const displayedRooms = rooms.filter(
+            (r) => selectedRoomId === 'ALL' || r.id === selectedRoomId
+          );
 
-            <table className="w-full border-collapse border border-black text-xs mt-4">
-              <thead>
-                <tr className="bg-slate-100">
-                  <th className="border border-black p-1.5 text-center w-8">No</th>
-                  <th className="border border-black p-1.5 text-center">Tanggal</th>
-                  <th className="border border-black p-1.5 text-center">Sesi</th>
-                  <th className="border border-black p-1.5 text-center">Ruang</th>
-                  <th className="border border-black p-1.5 text-center w-28">No. Peserta</th>
-                  <th className="border border-black p-1.5 text-left">Nama Siswa</th>
-                  <th className="border border-black p-1.5 text-center">Kelas</th>
-                  <th className="border border-black p-1.5 text-center">Alasan</th>
-                  <th className="border border-black p-1.5 text-left">Catatan</th>
-                </tr>
-              </thead>
-              <tbody>
-                {attendances
-                  .filter((a) => ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status))
-                  .filter((a) => {
-                    if (selectedClassId === 'ALL') return true;
-                    const stu = studentMap.get(a.studentId);
-                    return stu?.classId === selectedClassId;
-                  })
-                  .map((att, idx) => {
-                    const stu = studentMap.get(att.studentId);
-                    const sch = scheduleMap.get(att.scheduleId);
-                    const r = sch ? roomMap.get(sch.roomId) : null;
-                    return (
-                      <tr key={att.id}>
-                        <td className="border border-black p-1.5 text-center">{idx + 1}</td>
-                        <td className="border border-black p-1.5 text-center font-medium">
-                          {sch?.date || '-'}
+          let grandTotalSeharusnya = 0;
+          let grandTotalHadir = 0;
+          let grandTotalTidakHadir = 0;
+
+          const rows = displayedRooms.map((room, idx) => {
+            const permStudents = StorageService.getStudentsForRoom(room.id);
+            let candidateStudents: Student[] = [];
+
+            if (permStudents.length > 0) {
+              candidateStudents = permStudents;
+            } else {
+              const roomSchedules = schedules.filter(
+                (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
+              );
+              const seen = new Set<string>();
+              roomSchedules.forEach((sch) => {
+                sch.groups.forEach((grp) => {
+                  if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+                    grp.selectedStudentIds.forEach((sid) => {
+                      const st = studentMap.get(sid);
+                      if (st && !seen.has(st.id)) {
+                        seen.add(st.id);
+                        candidateStudents.push(st);
+                      }
+                    });
+                  } else {
+                    const clsStudents = students.filter(
+                      (s) => s.classId === grp.classId && s.status === 'AKTIF'
+                    );
+                    clsStudents.slice(0, grp.participantCount || undefined).forEach((st) => {
+                      if (!seen.has(st.id)) {
+                        seen.add(st.id);
+                        candidateStudents.push(st);
+                      }
+                    });
+                  }
+                });
+              });
+            }
+
+            if (selectedClassId !== 'ALL') {
+              candidateStudents = candidateStudents.filter((s) => s.classId === selectedClassId);
+            }
+
+            // Urutkan semua Daftar Nama Siswa berdasarkan Abjad Nama Lengkap dan Kelas
+            candidateStudents.sort((a, b) => {
+              const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
+              if (nameComp !== 0) return nameComp;
+              const clsA = classMap.get(a.classId)?.name || a.classId || '';
+              const clsB = classMap.get(b.classId)?.name || b.classId || '';
+              return clsA.localeCompare(clsB, 'id', { numeric: true });
+            });
+
+            const targetSchedules = schedules.filter(
+              (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
+            );
+            const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
+            const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
+            const attMap = new Map<string, StudentAttendance>();
+            roomAttendances.forEach((a) => attMap.set(a.studentId, a));
+
+            const absentList: { student: Student; status: string; notes?: string }[] = [];
+            candidateStudents.forEach((stu) => {
+              const att = attMap.get(stu.id);
+              if (att && ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
+                absentList.push({ student: stu, status: att.status, notes: att.notes });
+              }
+            });
+
+            const seharusnya = candidateStudents.length;
+            const tidakHadir = absentList.length;
+            const hadir = Math.max(0, seharusnya - tidakHadir);
+
+            grandTotalSeharusnya += seharusnya;
+            grandTotalHadir += hadir;
+            grandTotalTidakHadir += tidakHadir;
+
+            const keterangan =
+              absentList.length > 0
+                ? absentList
+                    .map(
+                      (item, i) =>
+                        `${i + 1}. ${item.student.name} (${classMap.get(item.student.classId)?.name || '-'} - ${item.status}${item.notes ? `: ${item.notes}` : ''})`
+                    )
+                    .join('; ')
+                : 'Nihil (Hadir Semua)';
+
+            return {
+              no: idx + 1,
+              room,
+              seharusnya,
+              hadir,
+              tidakHadir,
+              absentList,
+              keterangan
+            };
+          });
+
+          return (
+            <div>
+              <PrintHeader
+                settings={settings}
+                documentTitle={`REKAPITULASI KETIDAKHADIRAN SISWA PER HARI - ${examTitleSuffix}`}
+                documentSubtitle={`${reportSubtitle}${targetDate ? ` • Tanggal: ${targetDate}` : ''}`}
+              />
+
+              <table className="w-full border-collapse border border-black text-xs mt-4">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="border border-black p-2 text-center w-10">No</th>
+                    <th className="border border-black p-2 text-left w-48">Ruang</th>
+                    <th className="border border-black p-2 text-center w-32">Jumlah Seharusnya</th>
+                    <th className="border border-black p-2 text-center w-28">Jumlah Hadir</th>
+                    <th className="border border-black p-2 text-center w-32">Jumlah Tidak Hadir</th>
+                    <th className="border border-black p-2 text-left">Keterangan (Siswa Tidak Hadir)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="border border-black p-4 text-center text-gray-500 italic">
+                        Tidak ada ruang yang sesuai filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    rows.map((row) => (
+                      <tr key={row.room.id}>
+                        <td className="border border-black p-2 text-center">{row.no}</td>
+                        <td className="border border-black p-2 font-bold">
+                          {row.room.code} - {row.room.name}
                         </td>
-                        <td className="border border-black p-1.5 text-center">
-                          {sch ? getSessionLabel(sch.session) : '-'}
+                        <td className="border border-black p-2 text-center font-semibold">
+                          {row.seharusnya}
                         </td>
-                        <td className="border border-black p-1.5 text-center font-bold">
-                          {r?.code}
+                        <td className="border border-black p-2 text-center font-bold text-emerald-800">
+                          {row.hadir}
                         </td>
-                        <td className="border border-black p-1.5 text-center font-mono font-bold">
-                          {stu?.examNumber || stu?.nis}
+                        <td className="border border-black p-2 text-center font-bold text-rose-800">
+                          {row.tidakHadir}
                         </td>
-                        <td className="border border-black p-1.5 font-bold">{stu?.name}</td>
-                        <td className="border border-black p-1.5 text-center">
-                          {stu ? classMap.get(stu.classId)?.name : '-'}
-                        </td>
-                        <td className="border border-black p-1.5 text-center font-bold text-rose-700">
-                          {att.status}
-                        </td>
-                        <td className="border border-black p-1.5 text-[11px] italic">
-                          {att.notes || '-'}
+                        <td className="border border-black p-2 text-[11px] leading-relaxed">
+                          {row.absentList.length > 0 ? (
+                            <span className="text-rose-900 font-medium">{row.keterangan}</span>
+                          ) : (
+                            <span className="text-slate-500 italic">{row.keterangan}</span>
+                          )}
                         </td>
                       </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                    ))
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-slate-100 font-bold">
+                    <td colSpan={2} className="border border-black p-2 text-center uppercase tracking-wider">
+                      Total Keseluruhan
+                    </td>
+                    <td className="border border-black p-2 text-center">
+                      {grandTotalSeharusnya}
+                    </td>
+                    <td className="border border-black p-2 text-center text-emerald-800">
+                      {grandTotalHadir}
+                    </td>
+                    <td className="border border-black p-2 text-center text-rose-800">
+                      {grandTotalTidakHadir}
+                    </td>
+                    <td className="border border-black p-2 text-xs">
+                      {grandTotalSeharusnya > 0 ? (
+                        <span>
+                          Tingkat Kehadiran:{' '}
+                          {((grandTotalHadir / grandTotalSeharusnya) * 100).toFixed(1)}%
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          );
+        })()}
 
         {/* REPORT J: DENAH & PEMBAGIAN RUANG */}
         {activeReport === 'PEMBAGIAN_RUANG' && (
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="DENAH DAN PEMBAGIAN RUANG UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`DENAH DAN PEMBAGIAN RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="grid grid-cols-3 gap-3 my-4 text-xs font-serif text-center">
@@ -1364,14 +1651,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="KARTU PESERTA UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`KARTU PESERTA ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="grid grid-cols-2 gap-4 mt-4">
-              {students
-                .filter((s) => selectedClassId === 'ALL' || s.classId === selectedClassId)
-                .slice(0, 16)
+              {filteredAndSortedStudents
+                .slice(0, 32)
                 .map((stu) => {
                   const cardLogo =
                     settings.logoUrl ||
@@ -1403,7 +1689,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                             {settings.schoolName}
                           </p>
                           <p className="font-black text-xs uppercase text-blue-900">
-                            KARTU PESERTA UJIAN
+                            KARTU PESERTA {settings.examName || 'UJIAN'}
                           </p>
                           <p className="text-[9px] text-gray-700">TP {settings.academicYear}</p>
                         </div>
@@ -1438,7 +1724,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
                       <div className="border-t border-black pt-1 flex justify-between items-end text-[9px]">
                         <div>
-                          <p className="font-medium">Ruang: Sesuai Jadwal</p>
+                          <p className="font-medium">Ruang: Sesuai Jadwal / Mapping</p>
                           <p className="text-gray-500">Harap dibawa selama ujian</p>
                         </div>
                         <div className="text-center w-28">
@@ -1459,13 +1745,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="LABEL MEJA PESERTA UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`LABEL MEJA PESERTA ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
             <div className="grid grid-cols-2 gap-4 mt-6">
-              {students
-                .filter((s) => selectedClassId === 'ALL' || s.classId === selectedClassId)
-                .slice(0, 16)
+              {filteredAndSortedStudents
+                .slice(0, 32)
                 .map((stu) => (
                   <div
                     key={stu.id}
@@ -1494,35 +1779,53 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div>
             <PrintHeader
               settings={settings}
-              documentTitle="DAFTAR NOMINASI PESERTA UJIAN PER RUANG"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`DAFTAR NOMINASI PESERTA PER RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="space-y-6 mt-4">
               {rooms
                 .filter((r) => selectedRoomId === 'ALL' || r.id === selectedRoomId)
                 .map((room) => {
-                  const roomSchedules = schedules.filter((s) => s.roomId === room.id);
-                  // Collect unique students assigned to this room
-                  const studentIdsInRoom = new Set<string>();
-                  roomSchedules.forEach((sch) => {
-                    sch.groups.forEach((grp) => {
-                      if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
-                        grp.selectedStudentIds.forEach((sid) => studentIdsInRoom.add(sid));
-                      } else {
-                        students
-                          .filter((s) => s.classId === grp.classId && s.status === 'AKTIF')
-                          .slice(0, grp.participantCount || undefined)
-                          .forEach((s) => studentIdsInRoom.add(s.id));
-                      }
+                  const permStudents = StorageService.getStudentsForRoom(room.id);
+                  let roomStudents: Student[] = [];
+
+                  if (permStudents.length > 0) {
+                    roomStudents = permStudents;
+                  } else {
+                    const roomSchedules = schedules.filter((s) => s.roomId === room.id);
+                    const studentIdsInRoom = new Set<string>();
+                    roomSchedules.forEach((sch) => {
+                      sch.groups.forEach((grp) => {
+                        if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+                          grp.selectedStudentIds.forEach((sid) => studentIdsInRoom.add(sid));
+                        } else {
+                          students
+                            .filter((s) => s.classId === grp.classId && s.status === 'AKTIF')
+                            .slice(0, grp.participantCount || undefined)
+                            .forEach((s) => studentIdsInRoom.add(s.id));
+                        }
+                      });
                     });
+                    roomStudents = Array.from(studentIdsInRoom)
+                      .map((sid) => studentMap.get(sid))
+                      .filter(Boolean) as Student[];
+                  }
+
+                  if (selectedClassId !== 'ALL') {
+                    roomStudents = roomStudents.filter((s) => s.classId === selectedClassId);
+                  }
+
+                  // Urutkan semua Daftar Nama Siswa berdasarkan Abjad Nama Lengkap dan Kelas
+                  roomStudents.sort((a, b) => {
+                    const nameComp = (a.name || '').localeCompare(b.name || '', 'id', {
+                      sensitivity: 'base'
+                    });
+                    if (nameComp !== 0) return nameComp;
+                    const clsA = classMap.get(a.classId)?.name || a.classId || '';
+                    const clsB = classMap.get(b.classId)?.name || b.classId || '';
+                    return clsA.localeCompare(clsB, 'id', { numeric: true });
                   });
-
-                  const roomStudents = Array.from(studentIdsInRoom)
-                    .map((sid) => studentMap.get(sid))
-                    .filter(Boolean) as Student[];
-
-                  roomStudents.sort((a, b) => a.name.localeCompare(b.name));
 
                   return (
                     <div key={room.id} className="border border-black p-3 rounded print-avoid-break">
@@ -1594,8 +1897,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div className="space-y-4">
             <PrintHeader
               settings={settings}
-              documentTitle="PAKTA INTEGRITAS PENGAWAS RUANG UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`PAKTA INTEGRITAS PENGAWAS RUANG - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="text-xs leading-relaxed space-y-3">
@@ -1645,8 +1948,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div className="space-y-4">
             <PrintHeader
               settings={settings}
-              documentTitle="TATA TERTIB PESERTA &amp; PENGAWAS UJIAN SEKOLAH"
-              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+              documentTitle={`TATA TERTIB PESERTA & PENGAWAS - ${examTitleSuffix}`}
+              documentSubtitle={reportSubtitle}
             />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs text-justify">
