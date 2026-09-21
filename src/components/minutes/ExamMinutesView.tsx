@@ -810,21 +810,24 @@ export const ExamMinutesView: React.FC<ExamMinutesViewProps> = ({
                   />
                 </div>
 
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="verifiedCheck"
-                      checked={isVerified}
-                      onChange={(e) => setIsVerified(e.target.checked)}
-                      className="rounded text-blue-600"
-                    />
+                <div className="p-3.5 bg-blue-50/90 border border-blue-200 rounded-lg flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    id="verifiedCheck"
+                    checked={isVerified}
+                    onChange={(e) => setIsVerified(e.target.checked)}
+                    className="mt-0.5 rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                  />
+                  <div>
                     <label
                       htmlFor="verifiedCheck"
-                      className="text-xs font-semibold text-blue-900 cursor-pointer"
+                      className="text-xs font-bold text-blue-950 cursor-pointer block"
                     >
-                      Konfirmasi Verifikasi Pengawas Ruang (Telah disetujui &amp; ditandatangani)
+                      Verifikasi Pengawas Ruang (Telah disetujui &amp; ditandatangani)
                     </label>
+                    <p className="text-[11px] text-blue-800 mt-0.5 leading-relaxed">
+                      Wajib dicentang untuk memvalidasi pelaksanaan sesi ujian. <strong>Siswa yang tercatat tidak hadir pada sesi ini akan otomatis dimasukkan ke dalam Daftar Siswa Susulan</strong> setelah verifikasi disimpan.
+                    </p>
                   </div>
                 </div>
 

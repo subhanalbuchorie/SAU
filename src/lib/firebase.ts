@@ -70,6 +70,14 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): FirestoreErrorInfo {
+  const err = error as any;
+  const isUnavailable =
+    err?.code === 'unavailable' ||
+    (typeof err?.message === 'string' &&
+      (err.message.includes('unavailable') ||
+        err.message.includes('offline') ||
+        err.message.includes('Could not reach Cloud Firestore backend')));
+
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -83,7 +91,13 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  if (isUnavailable) {
+    console.warn(
+      `Firestore is currently operating offline for ${operationType} on ${path}. Local persistence is active.`
+    );
+  } else {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  }
   return errInfo;
 }
 
@@ -92,9 +106,15 @@ export async function testFirestoreConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, '_connection_test', 'ping'));
     return true;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firebase client is offline or network is disconnected.');
+  } catch (error: any) {
+    if (
+      error?.code === 'unavailable' ||
+      (error instanceof Error &&
+        (error.message.includes('offline') ||
+          error.message.includes('unavailable') ||
+          error.message.includes('Could not reach Cloud Firestore backend')))
+    ) {
+      console.warn('Firebase client is offline or network is disconnected. Local persistence is active.');
       return false;
     }
     // Any other response (like document not found or rules check) confirms connection was reached

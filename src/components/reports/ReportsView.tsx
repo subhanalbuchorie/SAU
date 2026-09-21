@@ -13,8 +13,10 @@ import {
   Tag,
   ShieldAlert,
   ClipboardList,
-  Eye,
-  CheckCircle2
+  Filter,
+  CheckCircle2,
+  Check,
+  Clock
 } from 'lucide-react';
 import {
   ExamSchedule,
@@ -75,15 +77,75 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [selectedClassId, setSelectedClassId] = useState<string>('ALL');
   const [selectedRoomId, setSelectedRoomId] = useState<string>('ALL');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string>(schedules[0]?.id || '');
 
   // Lookup maps
   const roomMap = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
   const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes]);
   const subjectMap = useMemo(() => new Map(subjects.map((s) => [s.id, s])), [subjects]);
-  const supervisorMap = useMemo(
-    () => new Map(supervisors.map((s) => [s.id, s])),
-    [supervisors]
-  );
+  const supervisorMap = useMemo(() => new Map(supervisors.map((s) => [s.id, s])), [supervisors]);
+  const studentMap = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
+  const scheduleMap = useMemo(() => new Map(schedules.map((s) => [s.id, s])), [schedules]);
+  const minuteMap = useMemo(() => new Map(minutes.map((m) => [m.scheduleId, m])), [minutes]);
+
+  // Unique Dates in schedules
+  const uniqueDates = useMemo(() => {
+    const dates = Array.from(new Set(schedules.map((s) => s.date))).filter(Boolean);
+    return dates.sort();
+  }, [schedules]);
+
+  // Active schedule for single-session reports (Daftar Hadir Siswa & Berita Acara)
+  const activeSchedule = useMemo(() => {
+    return scheduleMap.get(selectedScheduleId) || schedules[0];
+  }, [selectedScheduleId, scheduleMap, schedules]);
+
+  // Students for active schedule
+  const activeScheduleStudents = useMemo(() => {
+    if (!activeSchedule) return [];
+    const list: Student[] = [];
+    const seen = new Set<string>();
+
+    activeSchedule.groups.forEach((grp) => {
+      if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+        grp.selectedStudentIds.forEach((sid) => {
+          const s = studentMap.get(sid);
+          if (s && !seen.has(s.id)) {
+            seen.add(s.id);
+            list.push(s);
+          }
+        });
+      } else {
+        const clsStudents = students.filter(
+          (s) => s.classId === grp.classId && s.status === 'AKTIF'
+        );
+        const sliced = clsStudents.slice(0, grp.participantCount || undefined);
+        sliced.forEach((s) => {
+          if (!seen.has(s.id)) {
+            seen.add(s.id);
+            list.push(s);
+          }
+        });
+      }
+    });
+
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [activeSchedule, students, studentMap]);
+
+  // Map of student attendance for active schedule
+  const activeAttendanceMap = useMemo(() => {
+    if (!activeSchedule) return new Map<string, StudentAttendance>();
+    const map = new Map<string, StudentAttendance>();
+    attendances
+      .filter((a) => a.scheduleId === activeSchedule.id)
+      .forEach((a) => map.set(a.studentId, a));
+    return map;
+  }, [activeSchedule, attendances]);
+
+  // Existing minute for active schedule
+  const activeMinute = useMemo(() => {
+    if (!activeSchedule) return null;
+    return minuteMap.get(activeSchedule.id) || null;
+  }, [activeSchedule, minuteMap]);
 
   const reportList = [
     { key: 'JADWAL_TOTAL' as ReportType, label: 'A. Jadwal Ujian Keseluruhan', icon: Calendar },
@@ -103,50 +165,236 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     { key: 'TATA_TERTIB' as ReportType, label: 'O. Tata Tertib Peserta & Pengawas', icon: ShieldAlert }
   ];
 
-  // Excel Export Handler
+  // Excel Export Handler for ALL 15 reports
   const handleExportExcel = () => {
     let data: any[] = [];
-    let filename = `Laporan_${activeReport}`;
+    const filename = `Laporan_${activeReport}_${new Date().toISOString().split('T')[0]}`;
 
-    if (activeReport === 'JADWAL_TOTAL' || activeReport === 'JADWAL_RUANG') {
-      data = schedules.flatMap((sch, idx) => {
-        const r = roomMap.get(sch.roomId);
-        return sch.groups.map((grp) => {
-          const cls = classMap.get(grp.classId);
-          const sub = subjectMap.get(grp.subjectId);
-          return {
-            Tanggal: sch.date,
+    switch (activeReport) {
+      case 'JADWAL_TOTAL':
+        data = schedules.flatMap((sch, idx) => {
+          const r = roomMap.get(sch.roomId);
+          const supNames = sch.supervisors
+            .map((s) => supervisorMap.get(s.supervisorId)?.name)
+            .filter(Boolean)
+            .join(', ');
+          return sch.groups.map((grp) => ({
+            No: idx + 1,
+            Hari_Tanggal: sch.date,
             Sesi: sch.session,
             Waktu: `${sch.startTime} - ${sch.endTime}`,
             Ruang: r ? `${r.code} (${r.name})` : sch.roomId,
-            Kelas: cls?.name,
-            Mata_Pelajaran: sub?.name,
-            Jumlah_Peserta: grp.participantCount
+            Kelas: classMap.get(grp.classId)?.name || grp.classId,
+            Mata_Pelajaran: subjectMap.get(grp.subjectId)?.name || grp.subjectId,
+            Jumlah_Peserta: grp.participantCount,
+            Pengawas_Ruang: supNames || '-'
+          }));
+        });
+        break;
+
+      case 'JADWAL_RUANG':
+        data = schedules.flatMap((sch, idx) => {
+          const r = roomMap.get(sch.roomId);
+          return {
+            No: idx + 1,
+            Ruang: r ? `${r.code} - ${r.name}` : sch.roomId,
+            Gedung: r?.building || '-',
+            Tanggal: sch.date,
+            Sesi: sch.session,
+            Waktu: `${sch.startTime} - ${sch.endTime}`,
+            Kelas_Mapel: sch.groups
+              .map((g) => `${classMap.get(g.classId)?.name}: ${subjectMap.get(g.subjectId)?.name}`)
+              .join(' | '),
+            Total_Peserta: sch.groups.reduce((a, b) => a + b.participantCount, 0)
           };
         });
-      });
-    } else if (activeReport === 'REKAP_KETIDAKHADIRAN') {
-      const absents = attendances.filter((a) => a.status !== 'Hadir');
-      data = absents.map((att) => {
-        const stu = students.find((s) => s.id === att.studentId);
-        const cls = stu ? classMap.get(stu.classId) : null;
-        return {
-          No_Peserta: stu?.examNumber,
-          Nama_Siswa: stu?.name,
-          Kelas: cls?.name,
-          Status: att.status,
-          Waktu: att.timestamp
-        };
-      });
-    } else {
-      data = students.map((s) => ({
-        No_Peserta: s.examNumber,
-        NIS: s.nis,
-        Nama: s.name,
-        Kelas: classMap.get(s.classId)?.name,
-        Jurusan: s.major,
-        Status: s.status
-      }));
+        break;
+
+      case 'JADWAL_KELAS':
+        data = schedules.flatMap((sch) => {
+          const r = roomMap.get(sch.roomId);
+          const supNames = sch.supervisors
+            .map((s) => supervisorMap.get(s.supervisorId)?.name)
+            .filter(Boolean)
+            .join(', ');
+          return sch.groups.map((grp) => ({
+            Kelas: classMap.get(grp.classId)?.name || grp.classId,
+            Hari_Tanggal: sch.date,
+            Sesi: sch.session,
+            Waktu: `${sch.startTime} - ${sch.endTime}`,
+            Mata_Pelajaran: subjectMap.get(grp.subjectId)?.name || grp.subjectId,
+            Ruang_Ujian: r ? `${r.code} (${r.name})` : sch.roomId,
+            Pengawas: supNames || '-'
+          }));
+        });
+        break;
+
+      case 'JADWAL_PENGAWAS':
+        data = schedules.flatMap((sch, idx) => {
+          const r = roomMap.get(sch.roomId);
+          return sch.supervisors.map((supAssign, sIdx) => {
+            const sup = supervisorMap.get(supAssign.supervisorId);
+            return {
+              No: `${idx + 1}.${sIdx + 1}`,
+              Hari_Tanggal: sch.date,
+              Sesi: sch.session,
+              Waktu: `${sch.startTime} - ${sch.endTime}`,
+              Ruang: r ? `${r.code} (${r.name})` : sch.roomId,
+              Nama_Pengawas: sup?.name || '-',
+              NIP: sup?.nip || '-',
+              Tipe_Pengawas: supAssign.order ? `Pengawas ${supAssign.order}` : 'Pengawas Ruang',
+              Kelas_Mapel: sch.groups
+                .map((g) => `${classMap.get(g.classId)?.name}: ${subjectMap.get(g.subjectId)?.name}`)
+                .join(' | ')
+            };
+          });
+        });
+        break;
+
+      case 'REKAP_PENGAWAS':
+        data = supervisors.map((sup, idx) => {
+          const duties = schedules.filter((s) =>
+            s.supervisors.some((sa) => sa.supervisorId === sup.id)
+          );
+          const roomsAssigned = Array.from(
+            new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
+          ).join(', ');
+          return {
+            No: idx + 1,
+            Nama_Pengawas: sup.name,
+            NIP: sup.nip || '-',
+            Instansi_Asal: sup.subject || settings.schoolName,
+            No_Telepon: sup.phone || '-',
+            Total_Sesi_Tugas: duties.length,
+            Ruang_Diawasi: roomsAssigned || '-',
+            Keterangan: sup.notes || '-'
+          };
+        });
+        break;
+
+      case 'DAFTAR_HADIR_SISWA':
+        data = activeScheduleStudents.map((stu, idx) => {
+          const att = activeAttendanceMap.get(stu.id);
+          return {
+            No: idx + 1,
+            No_Peserta: stu.examNumber,
+            NIS: stu.nis,
+            NISN: stu.nisn || '-',
+            Nama_Siswa: stu.name,
+            Jenis_Kelamin: stu.gender,
+            Kelas: classMap.get(stu.classId)?.name || '-',
+            Status_Kehadiran: att?.status || 'Belum Diisi',
+            Waktu_Presensi: att?.timestamp || '-'
+          };
+        });
+        break;
+
+      case 'DAFTAR_HADIR_PENGAWAS':
+        data = schedules.flatMap((sch, idx) => {
+          const r = roomMap.get(sch.roomId);
+          return sch.supervisors.map((sa) => {
+            const sup = supervisorMap.get(sa.supervisorId);
+            return {
+              No: idx + 1,
+              Tanggal: sch.date,
+              Sesi: sch.session,
+              Ruang: r ? `${r.code} (${r.name})` : sch.roomId,
+              Nama_Pengawas: sup?.name || '-',
+              NIP: sup?.nip || '-',
+              Jam_Hadir: `${sch.startTime} WIB`,
+              Keterangan: 'Bertugas'
+            };
+          });
+        });
+        break;
+
+      case 'BERITA_ACARA':
+        data = schedules.map((sch, idx) => {
+          const r = roomMap.get(sch.roomId);
+          const min = minuteMap.get(sch.id);
+          return {
+            No: idx + 1,
+            Hari_Tanggal: sch.date,
+            Sesi: sch.session,
+            Ruang: r ? `${r.code} (${r.name})` : sch.roomId,
+            Jumlah_Terdaftar: min?.totalRegistered || sch.groups.reduce((a, b) => a + b.participantCount, 0),
+            Jumlah_Hadir: min?.presentCount ?? '-',
+            Jumlah_Tidak_Hadir: min?.absentCount ?? '-',
+            Nomor_Tidak_Hadir: min?.absentStudentNumbers || '-',
+            Status_Verifikasi: min?.verifiedBySupervisor ? 'Terverifikasi Pengawas' : 'Belum Diverifikasi',
+            Catatan: min?.notes || 'Tertib dan aman'
+          };
+        });
+        break;
+
+      case 'REKAP_KETIDAKHADIRAN': {
+        const absents = attendances.filter((a) => ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status));
+        data = absents.map((att, idx) => {
+          const stu = studentMap.get(att.studentId);
+          const sch = scheduleMap.get(att.scheduleId);
+          const r = sch ? roomMap.get(sch.roomId) : null;
+          return {
+            No: idx + 1,
+            Tanggal: sch?.date || '-',
+            Sesi: sch?.session || '-',
+            Ruang: r ? `${r.code} (${r.name})` : '-',
+            No_Peserta: stu?.examNumber || '-',
+            NIS: stu?.nis || '-',
+            Nama_Siswa: stu?.name || '-',
+            Kelas: stu ? classMap.get(stu.classId)?.name : '-',
+            Alasan: att.status,
+            Catatan: att.notes || '-'
+          };
+        });
+        break;
+      }
+
+      case 'PEMBAGIAN_RUANG':
+        data = rooms.map((rm, idx) => {
+          const roomSchedules = schedules.filter((s) => s.roomId === rm.id);
+          const classesInRoom = Array.from(
+            new Set(
+              roomSchedules.flatMap((s) =>
+                s.groups.map((g) => classMap.get(g.classId)?.name).filter(Boolean)
+              )
+            )
+          ).join(', ');
+          return {
+            No: idx + 1,
+            Kode_Ruang: rm.code,
+            Nama_Ruang: rm.name,
+            Gedung_Lantai: rm.building,
+            Kapasitas: rm.capacity,
+            Sesi_Penggunaan: roomSchedules.length,
+            Kelas_Menempati: classesInRoom || '-',
+            Status: rm.status
+          };
+        });
+        break;
+
+      case 'KARTU_PESERTA':
+      case 'LABEL_MEJA':
+      case 'PESERTA_PER_RUANG':
+        data = students.map((s, idx) => ({
+          No: idx + 1,
+          No_Peserta: s.examNumber,
+          NIS: s.nis,
+          NISN: s.nisn || '-',
+          Nama: s.name,
+          Jenis_Kelamin: s.gender,
+          Kelas: classMap.get(s.classId)?.name || '-',
+          Jurusan: s.major,
+          Status: s.status
+        }));
+        break;
+
+      default:
+        data = students.map((s) => ({
+          No_Peserta: s.examNumber,
+          Nama: s.name,
+          Kelas: classMap.get(s.classId)?.name || '-'
+        }));
+        break;
     }
 
     ExcelService.exportToExcel(data, filename);
@@ -164,24 +412,26 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </h2>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Format dokumen resmi standar dinas pendidikan lengkap dengan kop surat dan tanda tangan kepala sekolah.
+            Format dokumen resmi standar dinas pendidikan lengkap dengan kop surat sekolah, logo, dan tanda tangan resmi.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={handleExportExcel}
-            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            Export ke Excel (.xlsx)
+            <span>Export Excel (.xlsx)</span>
           </button>
           <button
-            onClick={() => triggerA4Print(`Laporan_${activeReport}_A4`)}
-            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            type="button"
+            onClick={() => triggerA4Print(`Laporan_${activeReport}`)}
+            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
           >
             <Printer className="w-3.5 h-3.5" />
-            Cetak Dokumen PDF (A4)
+            <span>Cetak Dokumen PDF (A4)</span>
           </button>
         </div>
       </div>
@@ -195,18 +445,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             <button
               key={rep.key}
               onClick={() => setActiveReport(rep.key)}
-              className={`p-2.5 rounded-lg border text-left text-xs transition-all flex items-start gap-2 ${
+              className={`p-2.5 rounded-lg border text-left text-xs transition-all flex items-start gap-2 cursor-pointer ${
                 isActive
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
               }`}
             >
               <Icon
                 className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
-                  isActive ? 'text-white' : 'text-slate-400'
+                  isActive ? 'text-white' : 'text-blue-600'
                 }`}
               />
-              <span className="font-semibold leading-tight line-clamp-2">
+              <span className="font-medium line-clamp-2 leading-tight">
                 {rep.label}
               </span>
             </button>
@@ -214,8 +464,108 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         })}
       </div>
 
+      {/* Dynamic Filter Toolbar for Selected Report */}
+      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 no-print text-xs">
+        <div className="flex items-center gap-2 text-slate-700 font-semibold">
+          <Filter className="w-4 h-4 text-blue-600" />
+          <span>Filter Laporan Terpilih:</span>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Schedule selector for single-session reports */}
+          {(activeReport === 'DAFTAR_HADIR_SISWA' || activeReport === 'BERITA_ACARA') && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium">Pilih Jadwal / Sesi:</span>
+              <select
+                value={selectedScheduleId}
+                onChange={(e) => setSelectedScheduleId(e.target.value)}
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                {schedules.map((sch) => {
+                  const r = roomMap.get(sch.roomId);
+                  const cls = sch.groups.map((g) => classMap.get(g.classId)?.name).join('/');
+                  const sub = sch.groups.map((g) => subjectMap.get(g.subjectId)?.name).join('/');
+                  return (
+                    <option key={sch.id} value={sch.id}>
+                      {sch.date} - Sesi {sch.session} | {r?.code} | {cls} - {sub}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          {/* Class selector */}
+          {(activeReport === 'JADWAL_KELAS' ||
+            activeReport === 'KARTU_PESERTA' ||
+            activeReport === 'LABEL_MEJA' ||
+            activeReport === 'REKAP_KETIDAKHADIRAN') && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium">Kelas:</span>
+              <select
+                value={selectedClassId}
+                onChange={(e) => setSelectedClassId(e.target.value)}
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="ALL">-- Semua Kelas --</option>
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.major})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Room selector */}
+          {(activeReport === 'JADWAL_RUANG' ||
+            activeReport === 'PEMBAGIAN_RUANG' ||
+            activeReport === 'PESERTA_PER_RUANG' ||
+            activeReport === 'LABEL_MEJA') && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium">Ruang:</span>
+              <select
+                value={selectedRoomId}
+                onChange={(e) => setSelectedRoomId(e.target.value)}
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="ALL">-- Semua Ruang --</option>
+                {rooms.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.code} - {r.name} ({r.building})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Date selector */}
+          {(activeReport === 'JADWAL_TOTAL' ||
+            activeReport === 'JADWAL_PENGAWAS' ||
+            activeReport === 'DAFTAR_HADIR_PENGAWAS') &&
+            uniqueDates.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-slate-600 font-medium">Tanggal Ujian:</span>
+                <select
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="ALL">-- Semua Tanggal --</option>
+                  {uniqueDates.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+        </div>
+      </div>
+
       {/* Printable Document Sheet Preview */}
-      <div className="print-page-a4 bg-white rounded-xl border border-slate-200 shadow-md p-6 md:p-8 max-w-4xl mx-auto font-serif text-black min-h-[600px] print:border-none print:shadow-none print:p-0">
+      <div className="print-page-a4 bg-white rounded-xl border border-slate-200 shadow-sm p-6 md:p-8 max-w-4xl mx-auto font-serif text-black min-h-[600px] print:border-none print:shadow-none print:p-0">
+        
         {/* REPORT A: JADWAL KESELURUHAN */}
         {activeReport === 'JADWAL_TOTAL' && (
           <div>
@@ -238,46 +588,48 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {schedules.map((sch, idx) => {
-                  const r = roomMap.get(sch.roomId);
-                  const totalP = sch.groups.reduce((a, b) => a + b.participantCount, 0);
-                  const supNames = sch.supervisors
-                    .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
-                    .filter(Boolean)
-                    .join(', ');
+                {schedules
+                  .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .map((sch, idx) => {
+                    const r = roomMap.get(sch.roomId);
+                    const totalP = sch.groups.reduce((a, b) => a + b.participantCount, 0);
+                    const supNames = sch.supervisors
+                      .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
+                      .filter(Boolean)
+                      .join(', ');
 
-                  return (
-                    <tr key={sch.id}>
-                      <td className="border border-black p-1.5 text-center">{idx + 1}</td>
-                      <td className="border border-black p-1.5 text-center font-medium">
-                        {sch.date}
-                      </td>
-                      <td className="border border-black p-1.5 text-center">
-                        {getSessionLabel(sch.session)} ({sch.startTime}-{sch.endTime})
-                      </td>
-                      <td className="border border-black p-1.5 text-center font-bold">
-                        {r?.code} ({r?.name})
-                      </td>
-                      <td className="border border-black p-1.5">
-                        {sch.groups.map((grp) => {
-                          const cls = classMap.get(grp.classId);
-                          const sub = subjectMap.get(grp.subjectId);
-                          return (
-                            <div key={grp.id} className="text-[11px] leading-tight">
-                              <strong>{cls?.name}</strong>: {sub?.name} ({grp.participantCount} siswa)
-                            </div>
-                          );
-                        })}
-                      </td>
-                      <td className="border border-black p-1.5 text-center font-bold">
-                        {totalP}
-                      </td>
-                      <td className="border border-black p-1.5 text-[11px]">
-                        {supNames || '-'}
-                      </td>
-                    </tr>
-                  );
-                })}
+                    return (
+                      <tr key={sch.id}>
+                        <td className="border border-black p-1.5 text-center">{idx + 1}</td>
+                        <td className="border border-black p-1.5 text-center font-medium">
+                          {sch.date}
+                        </td>
+                        <td className="border border-black p-1.5 text-center">
+                          {getSessionLabel(sch.session)} ({sch.startTime}-{sch.endTime})
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-bold">
+                          {r?.code} ({r?.name})
+                        </td>
+                        <td className="border border-black p-1.5">
+                          {sch.groups.map((grp) => {
+                            const cls = classMap.get(grp.classId);
+                            const sub = subjectMap.get(grp.subjectId);
+                            return (
+                              <div key={grp.id} className="text-[11px] leading-tight">
+                                <strong>{cls?.name}</strong>: {sub?.name} ({grp.participantCount} siswa)
+                              </div>
+                            );
+                          })}
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-bold">
+                          {totalP}
+                        </td>
+                        <td className="border border-black p-1.5 text-[11px]">
+                          {supNames || '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -292,50 +644,812 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
             />
             <div className="space-y-6 mt-4">
-              {rooms.map((room) => {
-                const roomSchedules = schedules.filter((s) => s.roomId === room.id);
-                return (
-                  <div key={room.id} className="border border-black p-3 rounded">
-                    <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
-                      <span>
-                        Ruang: {room.code} - {room.name} ({room.building})
-                      </span>
-                      <span>Kapasitas: {room.capacity} Siswa</span>
-                    </div>
+              {rooms
+                .filter((r) => selectedRoomId === 'ALL' || r.id === selectedRoomId)
+                .map((room) => {
+                  const roomSchedules = schedules.filter((s) => s.roomId === room.id);
+                  return (
+                    <div key={room.id} className="border border-black p-3 rounded print-avoid-break">
+                      <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
+                        <span>
+                          Ruang: {room.code} - {room.name} ({room.building})
+                        </span>
+                        <span>Kapasitas: {room.capacity} Meja</span>
+                      </div>
 
-                    <table className="w-full border-collapse border border-black text-xs">
-                      <thead>
-                        <tr className="bg-slate-100">
-                          <th className="border border-black p-1 text-center w-8">No</th>
-                          <th className="border border-black p-1 text-center">Tanggal</th>
-                          <th className="border border-black p-1 text-center">Waktu / Sesi</th>
-                          <th className="border border-black p-1 text-left">Kelompok Kelas &amp; Mapel</th>
-                          <th className="border border-black p-1 text-center">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {roomSchedules.map((sch, i) => (
-                          <tr key={sch.id}>
-                            <td className="border border-black p-1 text-center">{i + 1}</td>
-                            <td className="border border-black p-1 text-center">{sch.date}</td>
-                            <td className="border border-black p-1 text-center">
-                              {sch.startTime} - {sch.endTime} ({getSessionLabel(sch.session)})
-                            </td>
-                            <td className="border border-black p-1">
-                              {sch.groups
-                                .map((g) => `${classMap.get(g.classId)?.name}: ${subjectMap.get(g.subjectId)?.name}`)
-                                .join(' | ')}
-                            </td>
-                            <td className="border border-black p-1 text-center font-bold">
-                              {sch.groups.reduce((a, b) => a + b.participantCount, 0)}
-                            </td>
+                      <table className="w-full border-collapse border border-black text-xs">
+                        <thead>
+                          <tr className="bg-slate-100">
+                            <th className="border border-black p-1 text-center w-8">No</th>
+                            <th className="border border-black p-1 text-center">Tanggal</th>
+                            <th className="border border-black p-1 text-center">Waktu / Sesi</th>
+                            <th className="border border-black p-1 text-left">Kelompok Kelas &amp; Mapel</th>
+                            <th className="border border-black p-1 text-left">Pengawas</th>
+                            <th className="border border-black p-1 text-center">Total</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {roomSchedules.map((sch, i) => {
+                            const supNames = sch.supervisors
+                              .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
+                              .filter(Boolean)
+                              .join(', ');
+                            return (
+                              <tr key={sch.id}>
+                                <td className="border border-black p-1 text-center">{i + 1}</td>
+                                <td className="border border-black p-1 text-center">{sch.date}</td>
+                                <td className="border border-black p-1 text-center">
+                                  {sch.startTime} - {sch.endTime} ({getSessionLabel(sch.session)})
+                                </td>
+                                <td className="border border-black p-1">
+                                  {sch.groups
+                                    .map(
+                                      (g) =>
+                                        `${classMap.get(g.classId)?.name}: ${
+                                          subjectMap.get(g.subjectId)?.name
+                                        }`
+                                    )
+                                    .join(' | ')}
+                                </td>
+                                <td className="border border-black p-1 text-[11px]">{supNames || '-'}</td>
+                                <td className="border border-black p-1 text-center font-bold">
+                                  {sch.groups.reduce((a, b) => a + b.participantCount, 0)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+
+        {/* REPORT C: JADWAL PER KELAS */}
+        {activeReport === 'JADWAL_KELAS' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="JADWAL PELAKSANAAN UJIAN PER KELAS"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+            <div className="space-y-6 mt-4">
+              {classes
+                .filter((c) => selectedClassId === 'ALL' || c.id === selectedClassId)
+                .map((cls) => {
+                  const classSchedules = schedules.filter((s) =>
+                    s.groups.some((g) => g.classId === cls.id)
+                  );
+                  return (
+                    <div key={cls.id} className="border border-black p-3 rounded print-avoid-break">
+                      <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
+                        <span>
+                          Kelas: {cls.name} (Jurusan: {cls.major} - Tingkat {cls.grade})
+                        </span>
+                        <span>Jumlah Ujian: {classSchedules.length} Sesi</span>
+                      </div>
+
+                      <table className="w-full border-collapse border border-black text-xs">
+                        <thead>
+                          <tr className="bg-slate-100">
+                            <th className="border border-black p-1 text-center w-8">No</th>
+                            <th className="border border-black p-1 text-center">Hari / Tanggal</th>
+                            <th className="border border-black p-1 text-center">Waktu &amp; Sesi</th>
+                            <th className="border border-black p-1 text-left">Mata Pelajaran</th>
+                            <th className="border border-black p-1 text-center">Ruang Ujian</th>
+                            <th className="border border-black p-1 text-left">Pengawas Ruang</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {classSchedules.map((sch, i) => {
+                            const r = roomMap.get(sch.roomId);
+                            const grp = sch.groups.find((g) => g.classId === cls.id);
+                            const sub = grp ? subjectMap.get(grp.subjectId) : null;
+                            const supNames = sch.supervisors
+                              .map((sa) => supervisorMap.get(sa.supervisorId)?.name)
+                              .filter(Boolean)
+                              .join(', ');
+                            return (
+                              <tr key={sch.id}>
+                                <td className="border border-black p-1 text-center">{i + 1}</td>
+                                <td className="border border-black p-1 text-center font-medium">
+                                  {sch.date}
+                                </td>
+                                <td className="border border-black p-1 text-center">
+                                  {sch.startTime} - {sch.endTime} ({getSessionLabel(sch.session)})
+                                </td>
+                                <td className="border border-black p-1 font-semibold">
+                                  {sub?.name || '-'}
+                                </td>
+                                <td className="border border-black p-1 text-center font-bold">
+                                  {r?.code} ({r?.name})
+                                </td>
+                                <td className="border border-black p-1 text-[11px]">{supNames || '-'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+
+        {/* REPORT D: JADWAL PENGAWAS UJIAN */}
+        {activeReport === 'JADWAL_PENGAWAS' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="JADWAL TUGAS PENGAWAS RUANG UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <table className="w-full border-collapse border border-black text-xs mt-4">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-center">Hari / Tanggal</th>
+                  <th className="border border-black p-1.5 text-center">Sesi &amp; Waktu</th>
+                  <th className="border border-black p-1.5 text-center">Ruang</th>
+                  <th className="border border-black p-1.5 text-left">Nama Pengawas</th>
+                  <th className="border border-black p-1.5 text-center">NIP / NUPTK</th>
+                  <th className="border border-black p-1.5 text-left">Mata Pelajaran &amp; Kelas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedules
+                  .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .flatMap((sch, sIdx) => {
+                    const r = roomMap.get(sch.roomId);
+                    const classMapel = sch.groups
+                      .map(
+                        (g) => `${classMap.get(g.classId)?.name}: ${subjectMap.get(g.subjectId)?.name}`
+                      )
+                      .join(' | ');
+
+                    return sch.supervisors.map((sa, idx) => {
+                      const sup = supervisorMap.get(sa.supervisorId);
+                      return (
+                        <tr key={`${sch.id}-${sa.supervisorId}-${idx}`}>
+                          <td className="border border-black p-1.5 text-center">
+                            {sIdx + 1}.{idx + 1}
+                          </td>
+                          <td className="border border-black p-1.5 text-center font-medium">
+                            {sch.date}
+                          </td>
+                          <td className="border border-black p-1.5 text-center">
+                            {getSessionLabel(sch.session)} ({sch.startTime}-{sch.endTime})
+                          </td>
+                          <td className="border border-black p-1.5 text-center font-bold">
+                            {r?.code} ({r?.name})
+                          </td>
+                          <td className="border border-black p-1.5 font-bold">{sup?.name || '-'}</td>
+                          <td className="border border-black p-1.5 text-center font-mono">
+                            {sup?.nip || '-'}
+                          </td>
+                          <td className="border border-black p-1.5 text-[11px]">{classMapel}</td>
+                        </tr>
+                      );
+                    });
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT E: REKAP KEBUTUHAN PENGAWAS */}
+        {activeReport === 'REKAP_PENGAWAS' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="REKAPITULASI KEBUTUHAN &amp; PENUGASAN PENGAWAS RUANG"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <table className="w-full border-collapse border border-black text-xs mt-4">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-left">Nama Lengkap Pengawas</th>
+                  <th className="border border-black p-1.5 text-center">NIP / NUPTK</th>
+                  <th className="border border-black p-1.5 text-left">Unit Kerja / Asal</th>
+                  <th className="border border-black p-1.5 text-center">No. Kontak</th>
+                  <th className="border border-black p-1.5 text-center">Total Sesi Bertugas</th>
+                  <th className="border border-black p-1.5 text-left">Ruang Bertugas</th>
+                  <th className="border border-black p-1.5 text-center w-24">Tanda Tangan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {supervisors.map((sup, idx) => {
+                  const duties = schedules.filter((s) =>
+                    s.supervisors.some((sa) => sa.supervisorId === sup.id)
+                  );
+                  const roomCodes = Array.from(
+                    new Set(duties.map((d) => roomMap.get(d.roomId)?.code).filter(Boolean))
+                  ).join(', ');
+
+                  return (
+                    <tr key={sup.id}>
+                      <td className="border border-black p-1.5 text-center">{idx + 1}</td>
+                      <td className="border border-black p-1.5 font-bold">{sup.name}</td>
+                      <td className="border border-black p-1.5 text-center font-mono">
+                        {sup.nip || '-'}
+                      </td>
+                      <td className="border border-black p-1.5">
+                        {sup.subject || settings.schoolName}
+                      </td>
+                      <td className="border border-black p-1.5 text-center font-mono">
+                        {sup.phone || '-'}
+                      </td>
+                      <td className="border border-black p-1.5 text-center font-bold">
+                        {duties.length} Sesi
+                      </td>
+                      <td className="border border-black p-1.5 text-[11px]">{roomCodes || '-'}</td>
+                      <td className="border border-black p-1.5 text-center">
+                        <div className="h-6"></div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT F: DAFTAR HADIR SISWA */}
+        {activeReport === 'DAFTAR_HADIR_SISWA' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="DAFTAR HADIR PESERTA UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear} - Semester ${settings.semester}`}
+            />
+
+            {/* Session Information Table */}
+            {activeSchedule && (
+              <div className="border border-black p-2.5 rounded text-xs mb-3 space-y-1">
+                <div className="grid grid-cols-2 gap-x-4">
+                  <p>
+                    <strong>Hari / Tanggal:</strong> {activeSchedule.date}
+                  </p>
+                  <p>
+                    <strong>Ruang Ujian:</strong>{' '}
+                    {roomMap.get(activeSchedule.roomId)?.code} (
+                    {roomMap.get(activeSchedule.roomId)?.name})
+                  </p>
+                  <p>
+                    <strong>Waktu / Sesi:</strong> {activeSchedule.startTime} - {activeSchedule.endTime}{' '}
+                    ({getSessionLabel(activeSchedule.session)})
+                  </p>
+                  <p>
+                    <strong>Kelas:</strong>{' '}
+                    {activeSchedule.groups
+                      .map((g) => classMap.get(g.classId)?.name)
+                      .filter(Boolean)
+                      .join(', ')}
+                  </p>
+                  <p>
+                    <strong>Mata Pelajaran:</strong>{' '}
+                    {activeSchedule.groups
+                      .map((g) => subjectMap.get(g.subjectId)?.name)
+                      .filter(Boolean)
+                      .join(', ')}
+                  </p>
+                  <p>
+                    <strong>Jumlah Peserta:</strong> {activeScheduleStudents.length} Siswa
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <table className="w-full border-collapse border border-black text-xs">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-center w-28">No. Peserta</th>
+                  <th className="border border-black p-1.5 text-center w-20">NIS</th>
+                  <th className="border border-black p-1.5 text-left">Nama Lengkap Siswa</th>
+                  <th className="border border-black p-1.5 text-center w-10">L/P</th>
+                  <th className="border border-black p-1.5 text-center w-20">Kelas</th>
+                  <th className="border border-black p-1.5 text-center w-36" colSpan={2}>
+                    Tanda Tangan Siswa
+                  </th>
+                  <th className="border border-black p-1.5 text-center w-20">Ket</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeScheduleStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="border border-black p-4 text-center text-gray-500 italic">
+                      Tidak ada peserta pada sesi ujian ini.
+                    </td>
+                  </tr>
+                ) : (
+                  activeScheduleStudents.map((stu, idx) => {
+                    const att = activeAttendanceMap.get(stu.id);
+                    const isEven = (idx + 1) % 2 === 0;
+                    return (
+                      <tr key={stu.id}>
+                        <td className="border border-black p-1.5 text-center">{idx + 1}</td>
+                        <td className="border border-black p-1.5 text-center font-mono font-bold">
+                          {stu.examNumber}
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-mono">{stu.nis}</td>
+                        <td className="border border-black p-1.5 font-medium">{stu.name}</td>
+                        <td className="border border-black p-1.5 text-center">{stu.gender}</td>
+                        <td className="border border-black p-1.5 text-center">
+                          {classMap.get(stu.classId)?.name}
+                        </td>
+                        <td className="border border-black p-1 text-left w-18 h-7 text-[10px] pl-1.5 align-middle">
+                          {!isEven ? `${idx + 1}. .........` : ''}
+                        </td>
+                        <td className="border border-black p-1 text-left w-18 h-7 text-[10px] pl-1.5 align-middle">
+                          {isEven ? `${idx + 1}. .........` : ''}
+                        </td>
+                        <td className="border border-black p-1 text-center font-semibold text-[10px]">
+                          {att ? att.status : 'Hadir'}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT G: DAFTAR HADIR PENGAWAS */}
+        {activeReport === 'DAFTAR_HADIR_PENGAWAS' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="DAFTAR HADIR PENGAWAS RUANG UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <table className="w-full border-collapse border border-black text-xs mt-4">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-center">Hari / Tanggal</th>
+                  <th className="border border-black p-1.5 text-center">Sesi &amp; Waktu</th>
+                  <th className="border border-black p-1.5 text-center">Ruang</th>
+                  <th className="border border-black p-1.5 text-left">Nama Pengawas Ruang</th>
+                  <th className="border border-black p-1.5 text-center">NIP / NUPTK</th>
+                  <th className="border border-black p-1.5 text-center">Jam Hadir</th>
+                  <th className="border border-black p-1.5 text-center w-28">Tanda Tangan</th>
+                  <th className="border border-black p-1.5 text-center">Keterangan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedules
+                  .filter((s) => selectedDate === 'ALL' || s.date === selectedDate)
+                  .flatMap((sch, sIdx) => {
+                    const r = roomMap.get(sch.roomId);
+                    return sch.supervisors.map((sa, idx) => {
+                      const sup = supervisorMap.get(sa.supervisorId);
+                      return (
+                        <tr key={`${sch.id}-${sa.supervisorId}-${idx}`}>
+                          <td className="border border-black p-1.5 text-center">
+                            {sIdx + 1}.{idx + 1}
+                          </td>
+                          <td className="border border-black p-1.5 text-center font-medium">
+                            {sch.date}
+                          </td>
+                          <td className="border border-black p-1.5 text-center">
+                            {getSessionLabel(sch.session)} ({sch.startTime}-{sch.endTime})
+                          </td>
+                          <td className="border border-black p-1.5 text-center font-bold">
+                            {r?.code} ({r?.name})
+                          </td>
+                          <td className="border border-black p-1.5 font-bold">{sup?.name || '-'}</td>
+                          <td className="border border-black p-1.5 text-center font-mono">
+                            {sup?.nip || '-'}
+                          </td>
+                          <td className="border border-black p-1.5 text-center font-mono">
+                            {sch.startTime}
+                          </td>
+                          <td className="border border-black p-1.5 text-center">
+                            <div className="h-6"></div>
+                          </td>
+                          <td className="border border-black p-1.5 text-center text-[10px]">Bertugas</td>
+                        </tr>
+                      );
+                    });
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT H: BERITA ACARA UJIAN */}
+        {activeReport === 'BERITA_ACARA' && activeSchedule && (
+          <div className="space-y-4">
+            <PrintHeader
+              settings={settings}
+              documentTitle="BERITA ACARA PELAKSANAAN UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear} - Semester ${settings.semester}`}
+            />
+
+            <div className="text-xs leading-relaxed space-y-3 text-justify">
+              <p>
+                Pada hari ini, <strong>{activeSchedule.date}</strong>, telah diselenggarakan{' '}
+                <strong>Ujian Sekolah</strong> Tahun Pelajaran {settings.academicYear} di{' '}
+                <strong>{settings.schoolName}</strong> untuk:
+              </p>
+
+              <table className="w-full text-xs">
+                <tbody>
+                  <tr>
+                    <td className="w-36 py-1">Mata Pelajaran</td>
+                    <td className="py-1">
+                      :{' '}
+                      <strong>
+                        {activeSchedule.groups
+                          .map((g) => subjectMap.get(g.subjectId)?.name)
+                          .filter(Boolean)
+                          .join(', ')}
+                      </strong>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="w-36 py-1">Tingkat / Kelas</td>
+                    <td className="py-1">
+                      :{' '}
+                      {activeSchedule.groups
+                        .map((g) => classMap.get(g.classId)?.name)
+                        .filter(Boolean)
+                        .join(', ')}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="w-36 py-1">Ruang Ujian</td>
+                    <td className="py-1">
+                      : {roomMap.get(activeSchedule.roomId)?.code} -{' '}
+                      {roomMap.get(activeSchedule.roomId)?.name}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="w-36 py-1">Sesi &amp; Waktu</td>
+                    <td className="py-1">
+                      : {getSessionLabel(activeSchedule.session)} (Pukul {activeSchedule.startTime} s.d{' '}
+                      {activeSchedule.endTime} WIB)
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div className="border border-black p-3 rounded space-y-2 mt-2">
+                <p className="font-bold border-b border-black pb-1">
+                  I. Rekapitulasi Kehadiran Peserta Ujian:
+                </p>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="border border-black p-2 rounded">
+                    <span>Jumlah Terdaftar:</span>
+                    <p className="text-base font-bold">
+                      {activeMinute?.totalRegistered ??
+                        activeSchedule.groups.reduce((a, b) => a + b.participantCount, 0)}{' '}
+                      Siswa
+                    </p>
                   </div>
-                );
-              })}
+                  <div className="border border-black p-2 rounded">
+                    <span>Jumlah Hadir:</span>
+                    <p className="text-base font-bold text-emerald-700">
+                      {activeMinute?.presentCount ?? activeScheduleStudents.length} Siswa
+                    </p>
+                  </div>
+                  <div className="border border-black p-2 rounded">
+                    <span>Jumlah Tidak Hadir:</span>
+                    <p className="text-base font-bold text-rose-700">
+                      {activeMinute?.absentCount ?? 0} Siswa
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-2 text-xs">
+                  <p>
+                    <strong>Nomor Peserta Siswa Tidak Hadir:</strong>{' '}
+                    <span className="font-mono">
+                      {activeMinute?.absentStudentNumbers || 'Nihil / Seluruh Peserta Hadir Lengkap'}
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="border border-black p-3 rounded space-y-1">
+                <p className="font-bold border-b border-black pb-1">
+                  II. Catatan Khusus Selama Pelaksanaan Ujian:
+                </p>
+                <p className="italic pt-1">
+                  {activeMinute?.notes ||
+                    'Ujian berjalan dengan tertib, aman, lancar, dan kondusif. Sampul lembar soal dan LJK dibuka dalam keadaan tertutup dan tersegel rapi disaksikan peserta ujian.'}
+                </p>
+              </div>
+
+              {/* Status Verifikasi Pengawas */}
+              <div className="flex items-center gap-2 pt-1 font-semibold">
+                <span>Status Verifikasi:</span>
+                {activeMinute?.verifiedBySupervisor ? (
+                  <span className="text-emerald-700 font-bold flex items-center gap-1">
+                    <Check className="w-4 h-4" /> Telah Diverifikasi &amp; Disetujui Pengawas Ruang
+                  </span>
+                ) : (
+                  <span className="text-amber-700 font-medium">
+                    Menunggu Verifikasi Pengawas Ruang
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Signature section specific to Berita Acara (2 Pengawas + Kepala Sekolah) */}
+            <div className="mt-8 pt-4 border-t border-black text-xs">
+              <p className="font-semibold mb-3">Pengawas Ruang yang bertugas:</p>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <p>1. Pengawas Ruang 1:</p>
+                  <p className="font-bold mt-1">
+                    {supervisorMap.get(activeSchedule.supervisors[0]?.supervisorId)?.name || '__________________________'}
+                  </p>
+                  <p>
+                    NIP.{' '}
+                    {supervisorMap.get(activeSchedule.supervisors[0]?.supervisorId)?.nip || '__________________________'}
+                  </p>
+                  <div className="h-10 mt-1">TTD: .......................................</div>
+                </div>
+
+                <div>
+                  <p>2. Pengawas Ruang 2:</p>
+                  <p className="font-bold mt-1">
+                    {supervisorMap.get(activeSchedule.supervisors[1]?.supervisorId)?.name || '__________________________'}
+                  </p>
+                  <p>
+                    NIP.{' '}
+                    {supervisorMap.get(activeSchedule.supervisors[1]?.supervisorId)?.nip || '__________________________'}
+                  </p>
+                  <div className="h-10 mt-1">TTD: .......................................</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* REPORT I: REKAP KETIDAKHADIRAN */}
+        {activeReport === 'REKAP_KETIDAKHADIRAN' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="REKAPITULASI KETIDAKHADIRAN PESERTA UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <table className="w-full border-collapse border border-black text-xs mt-4">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-center">Tanggal</th>
+                  <th className="border border-black p-1.5 text-center">Sesi</th>
+                  <th className="border border-black p-1.5 text-center">Ruang</th>
+                  <th className="border border-black p-1.5 text-center w-28">No. Peserta</th>
+                  <th className="border border-black p-1.5 text-left">Nama Siswa</th>
+                  <th className="border border-black p-1.5 text-center">Kelas</th>
+                  <th className="border border-black p-1.5 text-center">Alasan</th>
+                  <th className="border border-black p-1.5 text-left">Catatan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {attendances
+                  .filter((a) => ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status))
+                  .filter((a) => {
+                    if (selectedClassId === 'ALL') return true;
+                    const stu = studentMap.get(a.studentId);
+                    return stu?.classId === selectedClassId;
+                  })
+                  .map((att, idx) => {
+                    const stu = studentMap.get(att.studentId);
+                    const sch = scheduleMap.get(att.scheduleId);
+                    const r = sch ? roomMap.get(sch.roomId) : null;
+                    return (
+                      <tr key={att.id}>
+                        <td className="border border-black p-1.5 text-center">{idx + 1}</td>
+                        <td className="border border-black p-1.5 text-center font-medium">
+                          {sch?.date || '-'}
+                        </td>
+                        <td className="border border-black p-1.5 text-center">
+                          {sch ? getSessionLabel(sch.session) : '-'}
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-bold">
+                          {r?.code}
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-mono font-bold">
+                          {stu?.examNumber || stu?.nis}
+                        </td>
+                        <td className="border border-black p-1.5 font-bold">{stu?.name}</td>
+                        <td className="border border-black p-1.5 text-center">
+                          {stu ? classMap.get(stu.classId)?.name : '-'}
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-bold text-rose-700">
+                          {att.status}
+                        </td>
+                        <td className="border border-black p-1.5 text-[11px] italic">
+                          {att.notes || '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT J: DENAH & PEMBAGIAN RUANG */}
+        {activeReport === 'PEMBAGIAN_RUANG' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="DENAH DAN PEMBAGIAN RUANG UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <div className="grid grid-cols-3 gap-3 my-4 text-xs font-serif text-center">
+              <div className="border border-black p-2 rounded">
+                <span>Total Ruang Ujian</span>
+                <p className="text-base font-bold">{rooms.length} Ruang</p>
+              </div>
+              <div className="border border-black p-2 rounded">
+                <span>Total Kapasitas Meja</span>
+                <p className="text-base font-bold">
+                  {rooms.reduce((a, b) => a + b.capacity, 0)} Meja
+                </p>
+              </div>
+              <div className="border border-black p-2 rounded">
+                <span>Total Siswa Terdaftar</span>
+                <p className="text-base font-bold">{students.length} Siswa</p>
+              </div>
+            </div>
+
+            <table className="w-full border-collapse border border-black text-xs">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border border-black p-1.5 text-center w-8">No</th>
+                  <th className="border border-black p-1.5 text-center">Kode Ruang</th>
+                  <th className="border border-black p-1.5 text-left">Nama Ruangan</th>
+                  <th className="border border-black p-1.5 text-center">Gedung / Lantai</th>
+                  <th className="border border-black p-1.5 text-center">Kapasitas</th>
+                  <th className="border border-black p-1.5 text-center">Sesi Ujian</th>
+                  <th className="border border-black p-1.5 text-left">Kelas yang Menempati</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rooms
+                  .filter((r) => selectedRoomId === 'ALL' || r.id === selectedRoomId)
+                  .map((rm, idx) => {
+                    const rmSchedules = schedules.filter((s) => s.roomId === rm.id);
+                    const classesAssigned = Array.from(
+                      new Set(
+                        rmSchedules.flatMap((s) =>
+                          s.groups.map((g) => classMap.get(g.classId)?.name).filter(Boolean)
+                        )
+                      )
+                    ).join(', ');
+
+                    return (
+                      <tr key={rm.id}>
+                        <td className="border border-black p-1.5 text-center">{idx + 1}</td>
+                        <td className="border border-black p-1.5 text-center font-bold font-mono">
+                          {rm.code}
+                        </td>
+                        <td className="border border-black p-1.5 font-medium">{rm.name}</td>
+                        <td className="border border-black p-1.5 text-center">{rm.building}</td>
+                        <td className="border border-black p-1.5 text-center font-bold">
+                          {rm.capacity} Meja
+                        </td>
+                        <td className="border border-black p-1.5 text-center font-semibold">
+                          {rmSchedules.length} Sesi
+                        </td>
+                        <td className="border border-black p-1.5 text-[11px]">{classesAssigned || '-'}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* REPORT K: CETAK KARTU PESERTA */}
+        {activeReport === 'KARTU_PESERTA' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="KARTU PESERTA UJIAN SEKOLAH"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              {students
+                .filter((s) => selectedClassId === 'ALL' || s.classId === selectedClassId)
+                .slice(0, 16)
+                .map((stu) => {
+                  const cardLogo =
+                    settings.logoUrl ||
+                    (typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null);
+                  const cls = classMap.get(stu.classId);
+
+                  return (
+                    <div
+                      key={stu.id}
+                      className="border-2 border-black rounded-lg p-3 text-xs bg-white space-y-2 print-avoid-break"
+                    >
+                      <div className="border-b border-black pb-1.5 flex items-center justify-between gap-2">
+                        {cardLogo ? (
+                          <div className="w-10 h-10 shrink-0 flex items-center justify-center overflow-hidden">
+                            <img
+                              src={cardLogo}
+                              alt="Logo"
+                              className="max-w-full max-h-full object-contain"
+                              referrerPolicy="no-referrer"
+                            />
+                          </div>
+                        ) : (
+                          <div className="w-10 h-10 border border-black rounded flex flex-col items-center justify-center text-[7px] font-bold text-center shrink-0">
+                            <span>LOGO</span>
+                          </div>
+                        )}
+                        <div className="flex-1 text-center">
+                          <p className="font-bold text-[10px] uppercase tracking-wide">
+                            {settings.schoolName}
+                          </p>
+                          <p className="font-black text-xs uppercase text-blue-900">
+                            KARTU PESERTA UJIAN
+                          </p>
+                          <p className="text-[9px] text-gray-700">TP {settings.academicYear}</p>
+                        </div>
+                        <div className="w-10 h-10 shrink-0" />
+                      </div>
+
+                      <div className="flex gap-2.5 pt-1">
+                        <div className="w-16 h-20 border border-black rounded flex flex-col items-center justify-center text-[9px] text-gray-500 shrink-0">
+                          <span>Foto</span>
+                          <span>2 x 3</span>
+                        </div>
+
+                        <div className="flex-1 space-y-0.5 text-[11px]">
+                          <p>
+                            <span className="inline-block w-20 font-semibold">No. Peserta</span>:{' '}
+                            <strong className="font-mono">{stu.examNumber}</strong>
+                          </p>
+                          <p>
+                            <span className="inline-block w-20 font-semibold">Nama Siswa</span>:{' '}
+                            <strong>{stu.name}</strong>
+                          </p>
+                          <p>
+                            <span className="inline-block w-20 font-semibold">NIS / NISN</span>:{' '}
+                            {stu.nis} / {stu.nisn || '-'}
+                          </p>
+                          <p>
+                            <span className="inline-block w-20 font-semibold">Kelas</span>:{' '}
+                            {cls?.name} ({stu.major})
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-black pt-1 flex justify-between items-end text-[9px]">
+                        <div>
+                          <p className="font-medium">Ruang: Sesuai Jadwal</p>
+                          <p className="text-gray-500">Harap dibawa selama ujian</p>
+                        </div>
+                        <div className="text-center w-28">
+                          <p>Kepala Sekolah,</p>
+                          <div className="h-6"></div>
+                          <p className="font-bold underline">{settings.principalName}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </div>
         )}
@@ -349,25 +1463,128 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
             />
             <div className="grid grid-cols-2 gap-4 mt-6">
-              {students.slice(0, 10).map((stu) => (
-                <div
-                  key={stu.id}
-                  className="border-2 border-black p-3 text-center rounded-lg space-y-1 bg-slate-50"
-                >
-                  <p className="text-[10px] font-bold uppercase tracking-wider">
-                    {settings.schoolName}
-                  </p>
-                  <div className="border-t border-b border-black py-1">
-                    <p className="text-base font-black font-mono tracking-widest text-blue-900">
-                      {stu.examNumber}
+              {students
+                .filter((s) => selectedClassId === 'ALL' || s.classId === selectedClassId)
+                .slice(0, 16)
+                .map((stu) => (
+                  <div
+                    key={stu.id}
+                    className="border-2 border-black p-3 text-center rounded-lg space-y-1 bg-slate-50 print-avoid-break"
+                  >
+                    <p className="text-[10px] font-bold uppercase tracking-wider">
+                      {settings.schoolName}
+                    </p>
+                    <div className="border-t border-b border-black py-1">
+                      <p className="text-base font-black font-mono tracking-widest text-blue-900">
+                        {stu.examNumber}
+                      </p>
+                    </div>
+                    <p className="text-xs font-bold uppercase truncate">{stu.name}</p>
+                    <p className="text-[10px] text-gray-700">
+                      Kelas: {classMap.get(stu.classId)?.name} | NIS: {stu.nis}
                     </p>
                   </div>
-                  <p className="text-xs font-bold uppercase truncate">{stu.name}</p>
-                  <p className="text-[10px] text-gray-700">
-                    Kelas: {classMap.get(stu.classId)?.name} | NIS: {stu.nis}
-                  </p>
-                </div>
-              ))}
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* REPORT M: DAFTAR PESERTA PER RUANG */}
+        {activeReport === 'PESERTA_PER_RUANG' && (
+          <div>
+            <PrintHeader
+              settings={settings}
+              documentTitle="DAFTAR NOMINASI PESERTA UJIAN PER RUANG"
+              documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
+            />
+
+            <div className="space-y-6 mt-4">
+              {rooms
+                .filter((r) => selectedRoomId === 'ALL' || r.id === selectedRoomId)
+                .map((room) => {
+                  const roomSchedules = schedules.filter((s) => s.roomId === room.id);
+                  // Collect unique students assigned to this room
+                  const studentIdsInRoom = new Set<string>();
+                  roomSchedules.forEach((sch) => {
+                    sch.groups.forEach((grp) => {
+                      if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
+                        grp.selectedStudentIds.forEach((sid) => studentIdsInRoom.add(sid));
+                      } else {
+                        students
+                          .filter((s) => s.classId === grp.classId && s.status === 'AKTIF')
+                          .slice(0, grp.participantCount || undefined)
+                          .forEach((s) => studentIdsInRoom.add(s.id));
+                      }
+                    });
+                  });
+
+                  const roomStudents = Array.from(studentIdsInRoom)
+                    .map((sid) => studentMap.get(sid))
+                    .filter(Boolean) as Student[];
+
+                  roomStudents.sort((a, b) => a.name.localeCompare(b.name));
+
+                  return (
+                    <div key={room.id} className="border border-black p-3 rounded print-avoid-break">
+                      <div className="flex justify-between font-bold border-b border-black pb-1 mb-2 text-xs">
+                        <span>
+                          Ruang: {room.code} - {room.name} ({room.building})
+                        </span>
+                        <span>Total Peserta: {roomStudents.length} Siswa</span>
+                      </div>
+
+                      <table className="w-full border-collapse border border-black text-xs">
+                        <thead>
+                          <tr className="bg-slate-100">
+                            <th className="border border-black p-1 text-center w-8">No</th>
+                            <th className="border border-black p-1 text-center w-12">Meja</th>
+                            <th className="border border-black p-1 text-center w-28">No. Peserta</th>
+                            <th className="border border-black p-1 text-center w-20">NIS</th>
+                            <th className="border border-black p-1 text-left">Nama Lengkap Siswa</th>
+                            <th className="border border-black p-1 text-center w-10">L/P</th>
+                            <th className="border border-black p-1 text-center w-20">Kelas</th>
+                            <th className="border border-black p-1 text-center w-20">Keterangan</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {roomStudents.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={8}
+                                className="border border-black p-3 text-center text-gray-500 italic"
+                              >
+                                Belum ada peserta terjadwal di ruang ini.
+                              </td>
+                            </tr>
+                          ) : (
+                            roomStudents.map((stu, i) => (
+                              <tr key={stu.id}>
+                                <td className="border border-black p-1 text-center">{i + 1}</td>
+                                <td className="border border-black p-1 text-center font-bold">
+                                  {i + 1}
+                                </td>
+                                <td className="border border-black p-1 text-center font-mono font-bold">
+                                  {stu.examNumber}
+                                </td>
+                                <td className="border border-black p-1 text-center font-mono">
+                                  {stu.nis}
+                                </td>
+                                <td className="border border-black p-1 font-medium">{stu.name}</td>
+                                <td className="border border-black p-1 text-center">{stu.gender}</td>
+                                <td className="border border-black p-1 text-center">
+                                  {classMap.get(stu.classId)?.name}
+                                </td>
+                                <td className="border border-black p-1 text-center text-[10px]">
+                                  Peserta Utama
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
             </div>
           </div>
         )}
@@ -428,7 +1645,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div className="space-y-4">
             <PrintHeader
               settings={settings}
-              documentTitle="TATA TERTIB PESERTA & PENGAWAS UJIAN SEKOLAH"
+              documentTitle="TATA TERTIB PESERTA &amp; PENGAWAS UJIAN SEKOLAH"
               documentSubtitle={`Tahun Pelajaran ${settings.academicYear}`}
             />
 
@@ -464,24 +1681,26 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           </div>
         )}
 
-        {/* Signatures for Official Documents */}
-        <div className="mt-12 flex justify-between text-xs font-serif pt-6 border-t border-gray-300 print-avoid-break">
-          <div className="text-center w-56">
-            <p className="invisible">Keterangan</p>
-            <p className="font-semibold">Ketua Panitia Ujian,</p>
-            <div className="h-16"></div>
-            <p className="font-bold underline">{settings.committeeHeadName}</p>
-            <p>NIP. {settings.committeeHeadNip}</p>
-          </div>
+        {/* Signatures for Official Documents (except Berita Acara which has its own signatures) */}
+        {activeReport !== 'BERITA_ACARA' && (
+          <div className="mt-12 flex justify-between text-xs font-serif pt-6 border-t border-gray-300 print-avoid-break">
+            <div className="text-center w-56">
+              <p className="invisible">Keterangan</p>
+              <p className="font-semibold">Ketua Panitia Ujian,</p>
+              <div className="h-16"></div>
+              <p className="font-bold underline">{settings.committeeHeadName}</p>
+              <p>NIP. {settings.committeeHeadNip}</p>
+            </div>
 
-          <div className="text-center w-56">
-            <p>Depok, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
-            <p className="font-semibold">Kepala Sekolah,</p>
-            <div className="h-16"></div>
-            <p className="font-bold underline">{settings.principalName}</p>
-            <p>NIP. {settings.principalNip}</p>
+            <div className="text-center w-56">
+              <p>Depok, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
+              <p className="font-semibold">Kepala Sekolah,</p>
+              <div className="h-16"></div>
+              <p className="font-bold underline">{settings.principalName}</p>
+              <p>NIP. {settings.principalNip}</p>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

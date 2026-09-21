@@ -17,8 +17,8 @@ import {
 import { SchoolSetting, Student, ClassItem } from '../../types';
 import { StorageService } from '../../lib/storage';
 
-// Helper to resize & compress image so it never exceeds Firestore or localStorage limits
-function compressImage(file: File, maxWidth = 260, maxHeight = 260): Promise<string> {
+// Helper to resize & compress image so it is lightweight, crisp, and never exceeds limits
+function compressImage(file: File, maxWidth = 200, maxHeight = 200): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -38,8 +38,8 @@ function compressImage(file: File, maxWidth = 260, maxHeight = 260): Promise<str
           }
         }
         const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = Math.max(width, 1);
+        canvas.height = Math.max(height, 1);
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(e.target?.result as string);
@@ -47,8 +47,8 @@ function compressImage(file: File, maxWidth = 260, maxHeight = 260): Promise<str
         }
         ctx.clearRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        const isPng = file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
-        const dataUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.88);
+        // Use PNG for logos to maintain crisp borders and transparency
+        const dataUrl = canvas.toDataURL('image/png');
         resolve(dataUrl);
       };
       img.onerror = () => reject(new Error('Gagal memproses file gambar'));
@@ -76,13 +76,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onReloadStudents,
   onRefresh
 }) => {
-  const [formData, setFormData] = useState<SchoolSetting>({ ...settings });
+  const [formData, setFormData] = useState<SchoolSetting>(() => {
+    const backupLogo = typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null;
+    return {
+      ...settings,
+      logoUrl: settings.logoUrl || backupLogo || ''
+    };
+  });
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [genMessage, setGenMessage] = useState<string | null>(null);
 
   // Sync state when settings prop updates
   useEffect(() => {
-    setFormData({ ...settings });
+    const backupLogo = typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null;
+    setFormData((prev) => ({
+      ...settings,
+      logoUrl: settings.logoUrl || prev.logoUrl || backupLogo || ''
+    }));
   }, [settings]);
 
   const students = studentsProp || StorageService.getStudents();
@@ -100,14 +110,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         const compressedBase64 = await compressImage(file);
         const updated = { ...formData, logoUrl: compressedBase64 };
         setFormData(updated);
-        // Auto-save immediately so kop surat everywhere gets updated right away
+
+        // Save immediately to local backup storage and StorageService
+        try {
+          localStorage.setItem('aus_school_logo', compressedBase64);
+        } catch (err) {
+          console.warn('Local storage backup full:', err);
+        }
+
+        StorageService.saveSettings(updated);
         if (onSaveSettings) {
           onSaveSettings(updated);
-        } else {
-          StorageService.saveSettings(updated);
-          onRefresh?.();
         }
-        setSuccessMessage('Logo sekolah berhasil diunggah dan disimpan otomatis!');
+        onRefresh?.();
+
+        setSuccessMessage('Logo sekolah berhasil diunggah dan disimpan!');
         setTimeout(() => setSuccessMessage(null), 3500);
       } catch (err) {
         console.error('Failed to compress logo', err);
@@ -118,24 +135,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleRemoveLogo = () => {
     const updated = { ...formData, logoUrl: '' };
     setFormData(updated);
+    try {
+      localStorage.removeItem('aus_school_logo');
+    } catch {}
+
+    StorageService.saveSettings(updated);
     if (onSaveSettings) {
       onSaveSettings(updated);
-    } else {
-      StorageService.saveSettings(updated);
-      onRefresh?.();
     }
+    onRefresh?.();
+
     setSuccessMessage('Logo sekolah berhasil dihapus.');
     setTimeout(() => setSuccessMessage(null), 3000);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const backupLogo = typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null;
+    const finalSettings = {
+      ...formData,
+      logoUrl: formData.logoUrl || backupLogo || ''
+    };
+
+    StorageService.saveSettings(finalSettings);
     if (onSaveSettings) {
-      onSaveSettings(formData);
-    } else {
-      StorageService.saveSettings(formData);
-      onRefresh?.();
+      onSaveSettings(finalSettings);
     }
+    onRefresh?.();
+
     setSuccessMessage('Pengaturan umum sekolah berhasil disimpan.');
     setTimeout(() => setSuccessMessage(null), 3500);
   };

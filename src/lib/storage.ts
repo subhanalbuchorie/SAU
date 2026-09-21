@@ -189,7 +189,18 @@ export const StorageService = {
     // 1. Settings
     subscribeToCollection<SchoolSetting>('settings', (items) => {
       if (items && items.length > 0) {
-        setStorageItem(STORAGE_KEYS.SETTINGS, items[0], true);
+        const localSettings = StorageService.getSettings();
+        const localLogo = (typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null) || localSettings.logoUrl || '';
+        const remoteLogo = items[0].logoUrl || '';
+        const effectiveLogo = remoteLogo || localLogo;
+        const merged: SchoolSetting = {
+          ...items[0],
+          logoUrl: effectiveLogo
+        };
+        if (effectiveLogo && !remoteLogo) {
+          saveDocument('settings', merged.id, merged);
+        }
+        setStorageItem(STORAGE_KEYS.SETTINGS, merged, true);
       } else {
         const cur = StorageService.getSettings();
         if (cur) saveDocument('settings', cur.id, cur);
@@ -387,9 +398,29 @@ export const StorageService = {
   },
 
   // Settings
-  getSettings: (): SchoolSetting => getStorageItem(STORAGE_KEYS.SETTINGS, initialSchoolSetting),
+  getSettings: (): SchoolSetting => {
+    const s = getStorageItem(STORAGE_KEYS.SETTINGS, initialSchoolSetting);
+    if (!s.logoUrl && typeof window !== 'undefined') {
+      try {
+        const backup = localStorage.getItem('aus_school_logo');
+        if (backup) s.logoUrl = backup;
+      } catch {}
+    }
+    return s;
+  },
   saveSettings: (settings: SchoolSetting) => {
     const updated = { ...settings, updatedAt: new Date().toISOString() };
+    if (typeof window !== 'undefined') {
+      try {
+        if (updated.logoUrl) {
+          localStorage.setItem('aus_school_logo', updated.logoUrl);
+        } else if (updated.logoUrl === '') {
+          localStorage.removeItem('aus_school_logo');
+        }
+      } catch (err) {
+        console.warn('Could not cache logo in local backup', err);
+      }
+    }
     setStorageItem(STORAGE_KEYS.SETTINGS, updated);
     saveDocument('settings', updated.id, updated);
     StorageService.addAuditLog('Update Pengaturan', 'SchoolSetting', settings.id, 'Memperbarui data identitas sekolah & pengaturan ujian.');
@@ -975,6 +1006,7 @@ export const StorageService = {
     const classes = StorageService.getClasses();
     const rooms = StorageService.getRooms();
     const supervisors = StorageService.getSupervisors();
+    const minutes = StorageService.getExamMinutes();
 
     const studentMap = new Map(students.map((s) => [s.id, s]));
     const scheduleMap = new Map(schedules.map((s) => [s.id, s]));
@@ -982,6 +1014,7 @@ export const StorageService = {
     const classMap = new Map(classes.map((c) => [c.id, c]));
     const roomMap = new Map(rooms.map((r) => [r.id, r]));
     const supervisorMap = new Map(supervisors.map((s) => [s.id, s]));
+    const minuteMap = new Map(minutes.map((m) => [m.scheduleId, m]));
 
     const existingMap = new Map<string, MakeUpExamRecord>();
     saved.forEach((item) => {
@@ -990,9 +1023,17 @@ export const StorageService = {
 
     let hasNewRecords = false;
 
-    // Scan all student attendances where status is NOT Hadir
+    // Scan student attendances where status is NOT Hadir
+    // STRICT REQUIREMENT: Siswa susulan HANYA ditambahkan jika berita acara sudah diverifikasi pengawas
     attendances.forEach((att) => {
       if (['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
+        const scheduleMinute = minuteMap.get(att.scheduleId);
+
+        // Verify that Berita Acara for this exam session exists AND has been verified by supervisor
+        if (!scheduleMinute || !scheduleMinute.verifiedBySupervisor) {
+          return;
+        }
+
         const key = `${att.scheduleId}_${att.studentId}`;
         const student = studentMap.get(att.studentId);
         const schedule = scheduleMap.get(att.scheduleId);
@@ -1033,8 +1074,17 @@ export const StorageService = {
       }
     });
 
+    // Filter valid records: keep confirmed ones OR those whose minute is verified by supervisor
+    const activeRecords: MakeUpExamRecord[] = [];
+    existingMap.forEach((rec) => {
+      const min = minuteMap.get(rec.scheduleId);
+      if (rec.status === 'SUDAH_SUSULAN' || (min && min.verifiedBySupervisor)) {
+        activeRecords.push(rec);
+      }
+    });
+
     // Hydrate all records with master entity names for easy rendering
-    const fullList = Array.from(existingMap.values()).map((rec) => {
+    const fullList = activeRecords.map((rec) => {
       const student = studentMap.get(rec.studentId);
       const cls = classMap.get(rec.classId) || (student ? classMap.get(student.classId) : null);
       const subj = subjectMap.get(rec.subjectId);
@@ -1054,8 +1104,8 @@ export const StorageService = {
       };
     });
 
-    if (hasNewRecords) {
-      setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, Array.from(existingMap.values()));
+    if (hasNewRecords || activeRecords.length !== saved.length) {
+      setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, activeRecords, false);
     }
 
     return fullList;

@@ -27,6 +27,7 @@ import {
   Supervisor,
   Student,
   StudentAttendance,
+  ExamMinute,
   SchoolSetting
 } from '../../types';
 import { StorageService } from '../../lib/storage';
@@ -43,6 +44,7 @@ interface MakeUpExamsViewProps {
   supervisors: Supervisor[];
   students: Student[];
   attendances: StudentAttendance[];
+  minutes?: ExamMinute[];
   settings: SchoolSetting;
   onRefresh: () => void;
 }
@@ -56,6 +58,7 @@ export const MakeUpExamsView: React.FC<MakeUpExamsViewProps> = ({
   supervisors,
   students,
   attendances,
+  minutes: propMinutes,
   settings,
   onRefresh
 }) => {
@@ -91,6 +94,22 @@ export const MakeUpExamsView: React.FC<MakeUpExamsViewProps> = ({
   const supervisorMap = useMemo(() => new Map(supervisors.map((s) => [s.id, s])), [supervisors]);
   const scheduleMap = useMemo(() => new Map(schedules.map((s) => [s.id, s])), [schedules]);
   const studentMap = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
+  const allMinutes = useMemo(() => propMinutes || StorageService.getExamMinutes(), [propMinutes]);
+  const minuteMap = useMemo(() => new Map(allMinutes.map((m) => [m.scheduleId, m])), [allMinutes]);
+
+  // Absent students whose schedule's Berita Acara is not yet verified by supervisor
+  const unverifiedAbsentsCount = useMemo(() => {
+    let count = 0;
+    attendances.forEach((att) => {
+      if (['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
+        const min = minuteMap.get(att.scheduleId);
+        if (!min || !min.verifiedBySupervisor) {
+          count++;
+        }
+      }
+    });
+    return count;
+  }, [attendances, minuteMap]);
 
   // Filtered MakeUp records
   const filteredRecords = useMemo(() => {
@@ -469,6 +488,35 @@ export const MakeUpExamsView: React.FC<MakeUpExamsViewProps> = ({
                 </span>
                 <span className="text-xl font-bold text-emerald-600">{completedCount} Siswa</span>
               </div>
+            </div>
+          </div>
+
+          {/* Aturan Verifikasi Berita Acara Info Box */}
+          <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-3.5 flex items-start gap-3 shadow-xs">
+            <UserCheck className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-blue-950 space-y-1">
+              <div className="font-bold flex items-center gap-2">
+                <span>Ketentuan Penambahan Siswa Susulan:</span>
+                <span className="bg-blue-200/70 text-blue-800 text-[10px] px-2 py-0.5 rounded-full font-semibold">
+                  Otomatis Berdasarkan Verifikasi
+                </span>
+              </div>
+              <p className="text-blue-900/90 leading-relaxed">
+                Siswa yang tidak hadir pada sesi ujian <strong>hanya akan ditambahkan ke daftar susulan setelah Berita Acara Ujian diverifikasi oleh Pengawas Ruang</strong> pada menu <em>Berita Acara</em>.
+              </p>
+              {unverifiedAbsentsCount > 0 ? (
+                <div className="inline-flex items-center gap-1.5 font-semibold text-amber-800 bg-amber-100/90 border border-amber-300 rounded-md px-2.5 py-1 text-[11px] mt-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>
+                    Perhatian: Terdapat {unverifiedAbsentsCount} siswa tidak hadir pada jadwal ujian yang belum diverifikasi berita acaranya oleh pengawas.
+                  </span>
+                </div>
+              ) : (
+                <p className="text-emerald-700 font-medium text-[11px] flex items-center gap-1">
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Seluruh sesi ujian yang memiliki catatan ketidakhadiran telah terverifikasi berita acaranya.</span>
+                </p>
+              )}
             </div>
           </div>
 

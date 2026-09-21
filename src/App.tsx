@@ -331,6 +331,7 @@ export default function App() {
               supervisors={supervisors}
               students={students}
               attendances={attendances}
+              minutes={minutes}
               settings={settings}
               onRefresh={refreshAllData}
             />
@@ -364,6 +365,10 @@ export default function App() {
               settings={settings}
               students={students}
               classes={classes}
+              onSaveSettings={(newSettings) => {
+                StorageService.saveSettings(newSettings);
+                refreshAllData();
+              }}
               onRefresh={refreshAllData}
             />
           )}

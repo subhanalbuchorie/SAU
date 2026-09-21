@@ -413,23 +413,28 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {printCardsFor.map((stu) => {
               const cls = classMap.get(stu.classId);
+              const cardLogo =
+                settings.logoUrl ||
+                (typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') : null);
               return (
                 <div
                   key={stu.id}
                   className="border-2 border-slate-900 rounded-lg p-3.5 bg-white text-xs space-y-2 relative print-avoid-break"
                 >
                   <div className="border-b border-black pb-2 flex items-center justify-between gap-2">
-                    {settings.logoUrl ? (
+                    {cardLogo ? (
                       <div className="w-10 h-10 shrink-0 flex items-center justify-center overflow-hidden">
                         <img
-                          src={settings.logoUrl}
+                          src={cardLogo}
                           alt="Logo"
                           className="max-w-full max-h-full object-contain"
                           referrerPolicy="no-referrer"
                         />
                       </div>
                     ) : (
-                      <div className="w-10 h-10 shrink-0" />
+                      <div className="w-10 h-10 border border-black rounded flex flex-col items-center justify-center text-[8px] font-bold text-center shrink-0">
+                        <span>LOGO</span>
+                      </div>
                     )}
                     <div className="flex-1 text-center">
                       <p className="font-bold text-[11px] uppercase tracking-wide">

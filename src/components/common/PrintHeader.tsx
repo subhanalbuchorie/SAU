@@ -16,9 +16,17 @@ export const PrintHeader: React.FC<PrintHeaderProps> = ({
   const settings = propSettings || StorageService.getSettings();
   const [imgError, setImgError] = useState(false);
 
-  // Retrieve logo url from passed settings or live StorageService
-  const rawLogo = settings?.logoUrl || StorageService.getSettings()?.logoUrl || '';
+  // Retrieve logo url from passed settings or live StorageService or local backup
+  const rawLogo =
+    settings?.logoUrl ||
+    StorageService.getSettings()?.logoUrl ||
+    (typeof window !== 'undefined' ? localStorage.getItem('aus_school_logo') || '' : '');
   const cleanLogo = typeof rawLogo === 'string' ? rawLogo.trim() : '';
+
+  React.useEffect(() => {
+    setImgError(false);
+  }, [cleanLogo]);
+
   const showLogo = cleanLogo.length > 0 && !imgError;
 
   return (
@@ -32,7 +40,6 @@ export const PrintHeader: React.FC<PrintHeaderProps> = ({
               onError={() => setImgError(true)}
               className="max-w-full max-h-full object-contain block print:block"
               referrerPolicy="no-referrer"
-              crossOrigin="anonymous"
             />
           </div>
         ) : (
