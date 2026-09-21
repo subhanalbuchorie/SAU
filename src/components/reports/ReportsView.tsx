@@ -1996,7 +1996,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
 
             <div className="text-center w-56">
-              <p>Depok, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
+              <p>{settings.city || 'Kota'}, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
               <p className="font-semibold">Kepala Sekolah,</p>
               <div className="h-16"></div>
               <p className="font-bold underline">{settings.principalName}</p>

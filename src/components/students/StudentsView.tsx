@@ -15,7 +15,10 @@ import {
   ChevronLeft,
   ChevronRight,
   IdCard,
-  X
+  X,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { Student, ClassItem, SchoolSetting, StudentStatus } from '../../types';
 import { StorageService } from '../../lib/storage';
@@ -69,11 +72,38 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
   const [formStatus, setFormStatus] = useState<StudentStatus>('AKTIF');
   const [formNotes, setFormNotes] = useState('');
 
+  // Sorting state for table columns
+  type StudentSortField = 'no' | 'examNumber' | 'name' | 'nis' | 'gender' | 'class' | 'status';
+  type SortDirection = 'asc' | 'desc';
+
+  const [sortField, setSortField] = useState<StudentSortField>('name');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  const handleSort = (field: StudentSortField) => {
+    if (sortField === field) {
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const renderSortIcon = (field: StudentSortField) => {
+    if (sortField === field) {
+      return sortDirection === 'asc' ? (
+        <ArrowUp className="w-3.5 h-3.5 text-blue-600 font-bold shrink-0 inline ml-1" />
+      ) : (
+        <ArrowDown className="w-3.5 h-3.5 text-blue-600 font-bold shrink-0 inline ml-1" />
+      );
+    }
+    return <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-60 hover:opacity-100 shrink-0 inline ml-1" />;
+  };
+
   const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes]);
 
-  // Filtered and sorted by Alphabetical Name and Class
+  // Filtered and sorted by chosen column
   const filtered = useMemo(() => {
-    return students
+    const list = students
       .filter((s) => {
         const matchSearch =
           s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -85,13 +115,48 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
         return matchSearch && matchClass && matchStatus;
       })
       .sort((a, b) => {
-        const nameComp = (a.name || '').localeCompare(b.name || '', 'id', { sensitivity: 'base' });
-        if (nameComp !== 0) return nameComp;
-        const clsA = classMap.get(a.classId)?.name || a.classId || '';
-        const clsB = classMap.get(b.classId)?.name || b.classId || '';
-        return clsA.localeCompare(clsB, 'id', { numeric: true });
+        let valA = '';
+        let valB = '';
+        switch (sortField) {
+          case 'examNumber':
+            valA = a.examNumber || '';
+            valB = b.examNumber || '';
+            break;
+          case 'name':
+            valA = a.name || '';
+            valB = b.name || '';
+            break;
+          case 'nis':
+            valA = a.nis || '';
+            valB = b.nis || '';
+            break;
+          case 'gender':
+            valA = a.gender || '';
+            valB = b.gender || '';
+            break;
+          case 'class':
+            valA = `${classMap.get(a.classId)?.name || ''} ${a.major || ''}`;
+            valB = `${classMap.get(b.classId)?.name || ''} ${b.major || ''}`;
+            break;
+          case 'status':
+            valA = a.status || '';
+            valB = b.status || '';
+            break;
+          case 'no':
+          default:
+            return 0;
+        }
+
+        const comp = valA.localeCompare(valB, 'id', { numeric: true, sensitivity: 'base' });
+        return sortDirection === 'asc' ? comp : -comp;
       });
-  }, [students, searchTerm, classFilter, statusFilter, classMap]);
+
+    if (sortField === 'no' && sortDirection === 'desc') {
+      list.reverse();
+    }
+
+    return list;
+  }, [students, searchTerm, classFilter, statusFilter, classMap, sortField, sortDirection]);
 
   // Paginated
   const totalPages = Math.ceil(filtered.length / pageSize) || 1;
@@ -497,7 +562,7 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                       <p className="italic text-gray-500">* Harap dibawa saat ujian</p>
                     </div>
                     <div className="text-center w-36">
-                      <p>Depok, {new Date().toLocaleDateString('id-ID', { dateStyle: 'medium' })}</p>
+                      <p>{settings.city || 'Kota'}, {new Date().toLocaleDateString('id-ID', { dateStyle: 'medium' })}</p>
                       <p className="font-semibold">Kepala Sekolah,</p>
                       <div className="h-10"></div>
                       <p className="font-bold underline">{settings.principalName}</p>
@@ -711,13 +776,76 @@ export const StudentsView: React.FC<StudentsViewProps> = ({
                         className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                       />
                     </th>
-                    <th className="py-3 px-4 w-12 text-center">No</th>
-                    <th className="py-3 px-4">Nomor Peserta</th>
-                    <th className="py-3 px-4">Nama Lengkap</th>
-                    <th className="py-3 px-4">NIS / NISN</th>
-                    <th className="py-3 px-4 text-center">L/P</th>
-                    <th className="py-3 px-4">Kelas &amp; Jurusan</th>
-                    <th className="py-3 px-4 text-center">Status</th>
+                    <th
+                      onClick={() => handleSort('no')}
+                      className="py-3 px-4 w-12 text-center cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan No"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>No</span>
+                        {renderSortIcon('no')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('examNumber')}
+                      className="py-3 px-4 cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan Nomor Peserta"
+                    >
+                      <div className="flex items-center gap-1">
+                        <span>Nomor Peserta</span>
+                        {renderSortIcon('examNumber')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('name')}
+                      className="py-3 px-4 cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan Nama Lengkap"
+                    >
+                      <div className="flex items-center gap-1">
+                        <span>Nama Lengkap</span>
+                        {renderSortIcon('name')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('nis')}
+                      className="py-3 px-4 cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan NIS / NISN"
+                    >
+                      <div className="flex items-center gap-1">
+                        <span>NIS / NISN</span>
+                        {renderSortIcon('nis')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('gender')}
+                      className="py-3 px-4 text-center cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan Jenis Kelamin"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>L/P</span>
+                        {renderSortIcon('gender')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('class')}
+                      className="py-3 px-4 cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan Kelas & Jurusan"
+                    >
+                      <div className="flex items-center gap-1">
+                        <span>Kelas &amp; Jurusan</span>
+                        {renderSortIcon('class')}
+                      </div>
+                    </th>
+                    <th
+                      onClick={() => handleSort('status')}
+                      className="py-3 px-4 text-center cursor-pointer select-none transition-colors hover:bg-slate-100/80"
+                      title="Urutkan Status"
+                    >
+                      <div className="flex items-center justify-center gap-1">
+                        <span>Status</span>
+                        {renderSortIcon('status')}
+                      </div>
+                    </th>
                     <th className="py-3 px-4 text-center w-28">Aksi</th>
                   </tr>
                 </thead>

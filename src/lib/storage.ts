@@ -1589,6 +1589,8 @@ export const StorageService = {
     setStorageItem(STORAGE_KEYS.MINUTES, list);
     saveDocument('minutes', saved.id, saved);
     StorageService.addAuditLog('Simpan Berita Acara', 'ExamMinute', minute.scheduleId, `Memperbarui berita acara untuk jadwal ${minute.scheduleId}`);
+    // Sync make-up exams automatically when Berita Acara is updated
+    StorageService.syncMakeUpExams();
   },
 
   // Student Attendances
@@ -1606,6 +1608,8 @@ export const StorageService = {
     }
     setStorageItem(STORAGE_KEYS.ATTENDANCES, existing);
     saveDocument('attendances', saved.id, saved);
+    // Sync make-up exams automatically when Student Attendance is updated
+    StorageService.syncMakeUpExams();
   },
   saveStudentAttendances: (attendances: StudentAttendance[]) => {
     const existing = StorageService.getStudentAttendances();
@@ -1616,11 +1620,19 @@ export const StorageService = {
     setStorageItem(STORAGE_KEYS.ATTENDANCES, merged);
     batchSaveDocuments('attendances', merged);
     StorageService.addAuditLog('Simpan Daftar Hadir Siswa', 'StudentAttendance', undefined, `Memperbarui ${attendances.length} status kehadiran siswa.`);
+    // Sync make-up exams automatically when Student Attendances are updated
+    StorageService.syncMakeUpExams();
   },
 
   // ==========================================
   // DAFTAR SISWA SUSULAN (MAKE-UP EXAMS)
   // ==========================================
+  syncMakeUpExams: (): MakeUpExamRecord[] => {
+    const list = StorageService.getMakeUpExams();
+    window.dispatchEvent(new Event('storage-updated'));
+    return list;
+  },
+
   getMakeUpExams: (): MakeUpExamRecord[] => {
     const saved = getStorageItem<MakeUpExamRecord[]>(STORAGE_KEYS.MAKEUP_EXAMS, []);
     const attendances = StorageService.getStudentAttendances();
@@ -1638,17 +1650,22 @@ export const StorageService = {
     const classMap = new Map(classes.map((c) => [c.id, c]));
     const roomMap = new Map(rooms.map((r) => [r.id, r]));
     const supervisorMap = new Map(supervisors.map((s) => [s.id, s]));
-    const minuteMap = new Map(minutes.map((m) => [m.scheduleId, m]));
+    const minuteMap = new Map<string, ExamMinute>();
+    minutes.forEach((m) => {
+      if (m.scheduleId) minuteMap.set(m.scheduleId, m);
+      if (m.id) minuteMap.set(m.id, m);
+    });
 
     const existingMap = new Map<string, MakeUpExamRecord>();
     saved.forEach((item) => {
       existingMap.set(`${item.scheduleId}_${item.studentId}`, item);
     });
 
-    let hasNewRecords = false;
+    let hasChanges = false;
+    const currentValidKeys = new Set<string>();
 
-    // Scan student attendances where status is NOT Hadir
-    // STRICT REQUIREMENT: Siswa susulan HANYA ditambahkan jika berita acara sudah diverifikasi pengawas
+    // 1. Scan student attendances where status is NOT Hadir
+    // STRICT REQUIREMENT: Siswa susulan otomatis terdaftar jika berita acara diverifikasi pengawas
     attendances.forEach((att) => {
       if (['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
         const scheduleMinute = minuteMap.get(att.scheduleId);
@@ -1663,6 +1680,7 @@ export const StorageService = {
         const schedule = scheduleMap.get(att.scheduleId);
 
         if (student && schedule) {
+          currentValidKeys.add(key);
           if (!existingMap.has(key)) {
             // Find subject for this student's class from schedule groups
             const grp = schedule.groups.find((g) => g.classId === student.classId) || schedule.groups[0];
@@ -1684,26 +1702,39 @@ export const StorageService = {
               updatedAt: new Date().toISOString()
             };
             existingMap.set(key, newRecord);
-            hasNewRecords = true;
+            hasChanges = true;
           } else {
-            // Update reason if it changed in attendance
+            // Update reason or notes if changed in attendance
             const existing = existingMap.get(key)!;
-            if (existing.reason !== att.status) {
+            if (existing.reason !== att.status || (att.notes && existing.notes !== att.notes)) {
               existing.reason = att.status;
+              if (att.notes) existing.notes = att.notes;
               existing.updatedAt = new Date().toISOString();
-              hasNewRecords = true;
+              hasChanges = true;
             }
           }
         }
       }
     });
 
-    // Filter valid records: keep confirmed ones OR those whose minute is verified by supervisor
+    // 2. Filter records dynamically:
+    // - SUDAH_SUSULAN: Pertahankan riwayat siswa yang sudah ujian susulan selama jadwal masih terdaftar
+    // - BELUM_SUSULAN: Otomatis dihapus jika siswa sudah berstatus Hadir atau verifikasi Berita Acara dibatalkan
     const activeRecords: MakeUpExamRecord[] = [];
-    existingMap.forEach((rec) => {
-      const min = minuteMap.get(rec.scheduleId);
-      if (rec.status === 'SUDAH_SUSULAN' || (min && min.verifiedBySupervisor)) {
+    existingMap.forEach((rec, key) => {
+      if (rec.status === 'SUDAH_SUSULAN') {
+        if (scheduleMap.has(rec.scheduleId)) {
+          activeRecords.push(rec);
+        } else {
+          hasChanges = true;
+        }
+        return;
+      }
+
+      if (currentValidKeys.has(key)) {
         activeRecords.push(rec);
+      } else {
+        hasChanges = true;
       }
     });
 
@@ -1728,8 +1759,8 @@ export const StorageService = {
       };
     });
 
-    if (hasNewRecords || activeRecords.length !== saved.length) {
-      setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, activeRecords, false);
+    if (hasChanges || activeRecords.length !== saved.length) {
+      setStorageItem(STORAGE_KEYS.MAKEUP_EXAMS, activeRecords, true);
     }
 
     return fullList;

@@ -331,7 +331,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
               <div className="mt-8 flex justify-end text-xs">
                 <div className="text-center w-64">
-                  <p>Depok, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
+                  <p>{settings.city || 'Kota'}, {new Date().toLocaleDateString('id-ID', { dateStyle: 'long' })}</p>
                   <p className="mt-1 font-semibold">Ketua Panitia Ujian,</p>
                   <div className="h-16"></div>
                   <p className="font-bold underline">{settings.committeeHeadName}</p>
