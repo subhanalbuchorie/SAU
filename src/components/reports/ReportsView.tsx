@@ -78,6 +78,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [selectedClassId, setSelectedClassId] = useState<string>('ALL');
   const [selectedRoomId, setSelectedRoomId] = useState<string>('ALL');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
+  const [selectedSession, setSelectedSession] = useState<string>('ALL');
   const [selectedScheduleId, setSelectedScheduleId] = useState<string>(schedules[0]?.id || '');
 
   // Lookup maps
@@ -94,6 +95,30 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const dates = Array.from(new Set(schedules.map((s) => s.date))).filter(Boolean);
     return dates.sort();
   }, [schedules]);
+
+  // Available sessions in schedules (filtered by date if selected)
+  const availableSessions = useMemo(() => {
+    const filtered = selectedDate !== 'ALL'
+      ? schedules.filter((s) => s.date === selectedDate)
+      : schedules;
+    const sessSet = new Set<string>();
+    filtered.forEach((s) => {
+      if (s.session !== undefined && s.session !== null && String(s.session).trim() !== '') {
+        sessSet.add(String(s.session));
+      }
+    });
+    if (sessSet.size === 0) {
+      schedules.forEach((s) => {
+        if (s.session !== undefined && s.session !== null && String(s.session).trim() !== '') {
+          sessSet.add(String(s.session));
+        }
+      });
+    }
+    if (sessSet.size === 0) {
+      return ['1', '2', '3'];
+    }
+    return Array.from(sessSet).sort((a, b) => Number(a) - Number(b));
+  }, [schedules, selectedDate]);
 
   // Active schedule for single-session reports (Daftar Hadir Siswa & Berita Acara)
   const activeSchedule = useMemo(() => {
@@ -410,17 +435,33 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         );
 
         data = displayedRooms.map((room, idx) => {
+          const targetSchedules = schedules.filter(
+            (s) =>
+              s.roomId === room.id &&
+              (!targetDate || s.date === targetDate) &&
+              (selectedSession === 'ALL' || String(s.session) === String(selectedSession))
+          );
+          const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
+          const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
+
           const permStudents = StorageService.getStudentsForRoom(room.id);
           let candidateStudents: Student[] = [];
 
           if (permStudents.length > 0) {
-            candidateStudents = permStudents;
+            if (targetSchedules.length > 0) {
+              const scheduledClassIds = new Set(
+                targetSchedules.flatMap((sch) => sch.groups.map((g) => g.classId))
+              );
+              const matchedPerm = permStudents.filter((s) => scheduledClassIds.has(s.classId));
+              candidateStudents = matchedPerm.length > 0 ? matchedPerm : permStudents;
+            } else if (selectedSession !== 'ALL') {
+              candidateStudents = [];
+            } else {
+              candidateStudents = permStudents;
+            }
           } else {
-            const roomSchedules = schedules.filter(
-              (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
-            );
             const seen = new Set<string>();
-            roomSchedules.forEach((sch) => {
+            targetSchedules.forEach((sch) => {
               sch.groups.forEach((grp) => {
                 if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
                   grp.selectedStudentIds.forEach((sid) => {
@@ -458,19 +499,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             return clsA.localeCompare(clsB, 'id', { numeric: true });
           });
 
-          const targetSchedules = schedules.filter(
-            (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
-          );
-          const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
-          const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
-          const attMap = new Map<string, StudentAttendance>();
-          roomAttendances.forEach((a) => attMap.set(a.studentId, a));
+          const studentAbsentAttendances = new Map<string, { status: string; notes?: string }[]>();
+          roomAttendances.forEach((a) => {
+            if (['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status)) {
+              const list = studentAbsentAttendances.get(a.studentId) || [];
+              list.push({ status: a.status, notes: a.notes });
+              studentAbsentAttendances.set(a.studentId, list);
+            }
+          });
 
           const absentList: { student: Student; status: string; notes?: string }[] = [];
           candidateStudents.forEach((stu) => {
-            const att = attMap.get(stu.id);
-            if (att && ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
-              absentList.push({ student: stu, status: att.status, notes: att.notes });
+            const atts = studentAbsentAttendances.get(stu.id);
+            if (atts && atts.length > 0) {
+              const primary = atts[0];
+              absentList.push({ student: stu, status: primary.status, notes: primary.notes });
             }
           });
 
@@ -482,14 +525,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               ? absentList
                   .map(
                     (item, i) =>
-                      `${i + 1}. ${item.student.name} (${classMap.get(item.student.classId)?.name || '-'} - ${item.status})`
+                      `${i + 1}. ${item.student.name} (${classMap.get(item.student.classId)?.name || '-'} - ${item.status}${item.notes ? `: ${item.notes}` : ''})`
                   )
                   .join('; ')
-              : 'Nihil / Hadir Semua';
+              : seharusnya > 0
+              ? 'Nihil / Hadir Semua'
+              : '- (Tidak ada jadwal)';
 
           return {
             No: idx + 1,
-            Ruang: `${room.code} - ${room.name}`,
+            Ruang: room.code,
             Jumlah_Seharusnya: seharusnya,
             Jumlah_Hadir: hadir,
             Jumlah_Tidak_Hadir: tidakHadir,
@@ -669,6 +714,25 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 {uniqueDates.map((d) => (
                   <option key={d} value={d}>
                     {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Session filter for Rekap Ketidakhadiran */}
+          {activeReport === 'REKAP_KETIDAKHADIRAN' && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-600 font-medium">Sesi:</span>
+              <select
+                value={selectedSession}
+                onChange={(e) => setSelectedSession(e.target.value)}
+                className="px-2.5 py-1 bg-white border border-slate-200 rounded-md text-xs font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="ALL">-- Semua Sesi --</option>
+                {availableSessions.map((sess) => (
+                  <option key={sess} value={String(sess)}>
+                    Sesi {sess}
                   </option>
                 ))}
               </select>
@@ -1395,17 +1459,33 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           let grandTotalTidakHadir = 0;
 
           const rows = displayedRooms.map((room, idx) => {
+            const targetSchedules = schedules.filter(
+              (s) =>
+                s.roomId === room.id &&
+                (!targetDate || s.date === targetDate) &&
+                (selectedSession === 'ALL' || String(s.session) === String(selectedSession))
+            );
+            const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
+            const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
+
             const permStudents = StorageService.getStudentsForRoom(room.id);
             let candidateStudents: Student[] = [];
 
             if (permStudents.length > 0) {
-              candidateStudents = permStudents;
+              if (targetSchedules.length > 0) {
+                const scheduledClassIds = new Set(
+                  targetSchedules.flatMap((sch) => sch.groups.map((g) => g.classId))
+                );
+                const matchedPerm = permStudents.filter((s) => scheduledClassIds.has(s.classId));
+                candidateStudents = matchedPerm.length > 0 ? matchedPerm : permStudents;
+              } else if (selectedSession !== 'ALL') {
+                candidateStudents = [];
+              } else {
+                candidateStudents = permStudents;
+              }
             } else {
-              const roomSchedules = schedules.filter(
-                (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
-              );
               const seen = new Set<string>();
-              roomSchedules.forEach((sch) => {
+              targetSchedules.forEach((sch) => {
                 sch.groups.forEach((grp) => {
                   if (grp.selectedStudentIds && grp.selectedStudentIds.length > 0) {
                     grp.selectedStudentIds.forEach((sid) => {
@@ -1443,19 +1523,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               return clsA.localeCompare(clsB, 'id', { numeric: true });
             });
 
-            const targetSchedules = schedules.filter(
-              (s) => s.roomId === room.id && (!targetDate || s.date === targetDate)
-            );
-            const targetScheduleIds = new Set(targetSchedules.map((s) => s.id));
-            const roomAttendances = attendances.filter((a) => targetScheduleIds.has(a.scheduleId));
-            const attMap = new Map<string, StudentAttendance>();
-            roomAttendances.forEach((a) => attMap.set(a.studentId, a));
+            const studentAbsentAttendances = new Map<string, { status: string; notes?: string }[]>();
+            roomAttendances.forEach((a) => {
+              if (['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(a.status)) {
+                const list = studentAbsentAttendances.get(a.studentId) || [];
+                list.push({ status: a.status, notes: a.notes });
+                studentAbsentAttendances.set(a.studentId, list);
+              }
+            });
 
             const absentList: { student: Student; status: string; notes?: string }[] = [];
             candidateStudents.forEach((stu) => {
-              const att = attMap.get(stu.id);
-              if (att && ['Tidak Hadir', 'Sakit', 'Izin', 'Alpa'].includes(att.status)) {
-                absentList.push({ student: stu, status: att.status, notes: att.notes });
+              const atts = studentAbsentAttendances.get(stu.id);
+              if (atts && atts.length > 0) {
+                const primary = atts[0];
+                absentList.push({ student: stu, status: primary.status, notes: primary.notes });
               }
             });
 
@@ -1475,7 +1557,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                         `${i + 1}. ${item.student.name} (${classMap.get(item.student.classId)?.name || '-'} - ${item.status}${item.notes ? `: ${item.notes}` : ''})`
                     )
                     .join('; ')
-                : 'Nihil (Hadir Semua)';
+                : seharusnya > 0
+                ? 'Nihil (Hadir Semua)'
+                : '- (Tidak ada jadwal)';
 
             return {
               no: idx + 1,
@@ -1493,18 +1577,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <PrintHeader
                 settings={settings}
                 documentTitle={`REKAPITULASI KETIDAKHADIRAN SISWA PER HARI - ${examTitleSuffix}`}
-                documentSubtitle={`${reportSubtitle}${targetDate ? ` • Tanggal: ${targetDate}` : ''}`}
+                documentSubtitle={`${reportSubtitle}${targetDate ? ` • Tanggal: ${targetDate}` : ''}${selectedSession !== 'ALL' ? ` • Sesi: ${selectedSession}` : ''}`}
               />
 
               <table className="w-full border-collapse border border-black text-xs mt-4">
                 <thead>
                   <tr className="bg-slate-100">
-                    <th className="border border-black p-2 text-center w-10">No</th>
-                    <th className="border border-black p-2 text-left w-48">Ruang</th>
-                    <th className="border border-black p-2 text-center w-32">Jumlah Seharusnya</th>
-                    <th className="border border-black p-2 text-center w-28">Jumlah Hadir</th>
-                    <th className="border border-black p-2 text-center w-32">Jumlah Tidak Hadir</th>
-                    <th className="border border-black p-2 text-left">Keterangan (Siswa Tidak Hadir)</th>
+                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">No</th>
+                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Ruang</th>
+                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Seharusnya</th>
+                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Hadir</th>
+                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Tidak Hadir</th>
+                    <th className="border border-black p-2 text-left w-full">Keterangan (Siswa Tidak Hadir)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1517,20 +1601,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   ) : (
                     rows.map((row) => (
                       <tr key={row.room.id}>
-                        <td className="border border-black p-2 text-center">{row.no}</td>
-                        <td className="border border-black p-2 font-bold">
-                          {row.room.code} - {row.room.name}
+                        <td className="border border-black p-2 text-center whitespace-nowrap">{row.no}</td>
+                        <td className="border border-black p-2 text-center font-bold whitespace-nowrap" title={row.room.name}>
+                          {row.room.code}
                         </td>
-                        <td className="border border-black p-2 text-center font-semibold">
+                        <td className="border border-black p-2 text-center font-semibold whitespace-nowrap">
                           {row.seharusnya}
                         </td>
-                        <td className="border border-black p-2 text-center font-bold text-emerald-800">
+                        <td className="border border-black p-2 text-center font-bold text-emerald-800 whitespace-nowrap">
                           {row.hadir}
                         </td>
-                        <td className="border border-black p-2 text-center font-bold text-rose-800">
+                        <td className="border border-black p-2 text-center font-bold text-rose-800 whitespace-nowrap">
                           {row.tidakHadir}
                         </td>
-                        <td className="border border-black p-2 text-[11px] leading-relaxed">
+                        <td className="border border-black p-2 text-[11px] leading-relaxed break-words">
                           {row.absentList.length > 0 ? (
                             <span className="text-rose-900 font-medium">{row.keterangan}</span>
                           ) : (
@@ -1543,16 +1627,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 </tbody>
                 <tfoot>
                   <tr className="bg-slate-100 font-bold">
-                    <td colSpan={2} className="border border-black p-2 text-center uppercase tracking-wider">
+                    <td colSpan={2} className="border border-black p-2 text-center uppercase tracking-wider whitespace-nowrap">
                       Total Keseluruhan
                     </td>
-                    <td className="border border-black p-2 text-center">
+                    <td className="border border-black p-2 text-center whitespace-nowrap">
                       {grandTotalSeharusnya}
                     </td>
-                    <td className="border border-black p-2 text-center text-emerald-800">
+                    <td className="border border-black p-2 text-center text-emerald-800 whitespace-nowrap">
                       {grandTotalHadir}
                     </td>
-                    <td className="border border-black p-2 text-center text-rose-800">
+                    <td className="border border-black p-2 text-center text-rose-800 whitespace-nowrap">
                       {grandTotalTidakHadir}
                     </td>
                     <td className="border border-black p-2 text-xs">
