@@ -1583,12 +1583,28 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <table className="w-full border-collapse border border-black text-xs mt-4">
                 <thead>
                   <tr className="bg-slate-100">
-                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">No</th>
-                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Ruang</th>
-                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Seharusnya</th>
-                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Hadir</th>
-                    <th className="border border-black p-2 text-center whitespace-nowrap w-auto">Jumlah Tidak Hadir</th>
-                    <th className="border border-black p-2 text-left w-full">Keterangan (Siswa Tidak Hadir)</th>
+                    <th className="border border-black p-2 text-center align-middle w-10">
+                      No
+                    </th>
+                    <th className="border border-black p-2 text-center align-middle w-14">
+                      Ruang
+                    </th>
+                    <th className="border border-black p-2 text-center align-middle w-20 leading-tight">
+                      <div>Jumlah</div>
+                      <div>Seharusnya</div>
+                    </th>
+                    <th className="border border-black p-2 text-center align-middle w-16 leading-tight">
+                      <div>Jumlah</div>
+                      <div>Hadir</div>
+                    </th>
+                    <th className="border border-black p-2 text-center align-middle w-28 leading-tight">
+                      <div>Jumlah</div>
+                      <div>Tidak Hadir</div>
+                    </th>
+                    <th className="border border-black p-2 text-center align-middle w-auto leading-tight">
+                      <div>Keterangan</div>
+                      <div className="text-[11px] font-normal text-slate-700">(Siswa Tidak Hadir)</div>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
